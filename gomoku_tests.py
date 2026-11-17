@@ -1,6 +1,5 @@
 # gomoku_tests.py
-# Этап 0: тестовая обвязка. Работает и как скрипт, и под pytest.
-# Движок не меняется. Красные/xfail тесты — зафиксированные известные баги.
+# Этап 2: часть багов закрыта, часть оставлена за этапом 3.
 
 import json
 import sys
@@ -16,11 +15,9 @@ from gomoku import (
     Board, PLAYER_X, PLAYER_O, EMPTY,
     check_double_threat, search_vcf, check_immediate_win,
     find_all_open_three_blocks, get_potential_threats,
-    get_best_move, DEBUG_LOG,
+    count_all_open_threes, get_best_move, DEBUG_LOG,
 )
 
-
-# ---------- построение позиций ----------
 
 def build(x_stones: List[Tuple[int, int]], o_stones: List[Tuple[int, int]]) -> Board:
     b = Board()
@@ -55,13 +52,10 @@ def ascii_board(b: Board) -> str:
     return "\n".join(lines)
 
 
-# ---------- реестр тестов ----------
-
 TESTS = []
 
 
 def case(name: str, known_bug: Optional[str] = None):
-    """Декоратор: регистрирует тест для скриптового раннера и помечает xfail для pytest."""
     def deco(fn):
         TESTS.append((name, fn, known_bug))
         if pytest is not None and known_bug:
@@ -70,62 +64,65 @@ def case(name: str, known_bug: Optional[str] = None):
     return deco
 
 
-# ---------- тесты ----------
+# ---------- закрыто этапом 2 ----------
 
-@case("одна закрытая четвёрка — НЕ вилка",
-      known_bug="check_double_threat считает четвёрку 4 раза (по камням)")
+@case("одна закрытая четвёрка — НЕ вилка")
 def test_closed_four_not_fork():
     b = build([(0, 0), (1, 0), (2, 0), (3, 0)], [(-1, 0)])
-    assert check_double_threat(b, PLAYER_X) is False, \
-        "одна закрытая четвёрка блокируется одним ходом, это не вилка"
-
-
-@case("открытая четвёрка — победа")
-def test_open_four_is_win():
-    b = build([(0, 0), (1, 0), (2, 0), (3, 0)], [(10, 10)])
-    assert check_double_threat(b, PLAYER_X) is True
-
-
-@case("четвёрка с разрывом — одна точка достройки, не вилка")
-def test_gap_four_not_fork():
-    b = build([(0, 0), (1, 0), (3, 0), (4, 0)], [(-1, 0)])
     assert check_double_threat(b, PLAYER_X) is False
-    threats = get_potential_threats(b, 2, 0, PLAYER_X)
-    assert "five" in threats, "достройка разрыва должна давать пятёрку"
 
 
-@case("разрывная четвёрка с двумя пустыми концами — всё равно ОДНА точка пятёрки",
-      known_bug="get_potential_threats помечает .XX_XX. как open_four")
+@case("две спящие тройки O_XXX_O — НЕ вилка")
+def test_two_sleeping_threes_not_fork():
+    b = build([(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)],
+              [(-2, 0), (4, 0), (0, -2), (0, 4)])
+    assert check_double_threat(b, PLAYER_X) is False
+
+
+@case("count_all_open_threes считает только живые тройки")
+def test_count_only_live_threes():
+    sleeping = build([(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)],
+                     [(-2, 0), (4, 0), (0, -2), (0, 4)])
+    assert count_all_open_threes(sleeping, PLAYER_X) == 0
+    live = build([(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)], [])
+    assert count_all_open_threes(live, PLAYER_X) == 2
+
+
+@case("позиция из лога: X(3,1) не даёт вилку")
+def test_log_position_x31_not_fork():
+    moves = [
+        ["O", 0, 0], ["X", 1, -1], ["O", 2, 2], ["X", 0, -2],
+        ["O", -1, -1], ["X", -2, -2], ["O", 3, 3], ["X", 1, 1],
+        ["O", 1, -2], ["X", -1, -3], ["O", -2, -4], ["X", 0, -4],
+        ["O", -3, -1], ["X", 0, -3], ["O", 0, -5], ["X", 1, -3],
+        ["O", 2, -3], ["X", 3, 1],
+    ]
+    b = from_moves(moves)
+    assert check_double_threat(b, PLAYER_X) is False
+
+
+# ---------- остаётся на этап 3 ----------
+
+@case("разрывная четвёрка — одна точка пятёрки в get_potential_threats",
+      known_bug="этап 3: get_potential_threats ещё старый, помечает .XX_XX. как open_four")
 def test_gap_four_single_completion():
     b = build([(0, 0), (1, 0), (3, 0)], [])
     threats = get_potential_threats(b, 4, 0, PLAYER_X)
-    assert "closed_four" in threats, "это четвёрка с одной точкой достройки"
-    assert "open_four" not in threats, "у неё нет двух точек пятёрки"
-
-
-@case("две спящие тройки O_XXX_O — НЕ вилка",
-      known_bug="count_all_open_threes не отличает живую тройку от спящей")
-def test_two_sleeping_threes_not_fork():
-    b = build(
-        [(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)],
-        [(-2, 0), (4, 0), (0, -2), (0, 4)],
-    )
-    assert check_double_threat(b, PLAYER_X) is False, \
-        "обе тройки дают только закрытые четвёрки, форсированной победы нет"
+    assert "closed_four" in threats
+    assert "open_four" not in threats
 
 
 @case("одна закрытая тройка — VCF нет",
-      known_bug="любая четвёрка объявляется победой из-за бага ×4")
+      known_bug="этап 3: defense_moves ищет свои четвёрки защитника вместо блокировки")
 def test_single_closed_three_no_vcf():
     b = build([(0, 0), (1, 0), (2, 0)], [(-1, 0)])
     assert check_immediate_win(b, PLAYER_X) is None
     move = search_vcf(b, depth=6, player=PLAYER_X, is_attacking=True)
-    assert move is None, \
-        f"X(3,0) даёт закрытую четвёрку, O(4,0) блокирует; VCF нет, а найдено {move}"
+    assert move is None, f"найдено {move}"
 
 
 @case("позиция из лога после O(2,-3) — VCF у X нет",
-      known_bug="defense_moves ищет свои четвёрки O вместо блокировки; плюс баг ×4")
+      known_bug="этап 3: неверная генерация защит в search_vcf")
 def test_log_position_no_vcf():
     moves = [
         ["O", 0, 0], ["X", 1, -1], ["O", 2, 2], ["X", 0, -2],
@@ -136,15 +133,28 @@ def test_log_position_no_vcf():
     ]
     b = from_moves(moves)
     move = search_vcf(b, depth=6, player=PLAYER_X, is_attacking=True)
-    assert move is None, \
-        f"после O(2,-3) у X нет форсированного выигрыша; найдено {move}"
+    assert move is None, f"найдено {move}"
+
+
+# ---------- было зелёным и осталось ----------
+
+@case("открытая четвёрка — победа")
+def test_open_four_is_win():
+    b = build([(0, 0), (1, 0), (2, 0), (3, 0)], [(10, 10)])
+    assert check_double_threat(b, PLAYER_X) is True
+
+
+@case("четвёрка с разрывом — не вилка")
+def test_gap_four_not_fork():
+    b = build([(0, 0), (1, 0), (3, 0), (4, 0)], [(-1, 0)])
+    assert check_double_threat(b, PLAYER_X) is False
+    assert "five" in get_potential_threats(b, 2, 0, PLAYER_X)
 
 
 @case("немедленная пятёрка находится")
 def test_immediate_win():
     b = build([(0, 0), (1, 0), (2, 0), (3, 0)], [(10, 10)])
-    move = check_immediate_win(b, PLAYER_X)
-    assert move in {(4, 0), (-1, 0)}, f"ожидалась достройка пятёрки, получено {move}"
+    assert check_immediate_win(b, PLAYER_X) in {(4, 0), (-1, 0)}
 
 
 @case("блокировки открытой тройки найдены")
@@ -154,12 +164,12 @@ def test_open_three_blocks():
     assert (-1, 0) in blocks and (3, 0) in blocks
 
 
-# ---------- скриптовый раннер ----------
+# ---------- раннер и утилиты ----------
 
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)
-    print("ЭТАП 0 — тестовая обвязка (движок не изменён)")
+    print("ЭТАП 2 — анализатор подключён")
     print("=" * 70)
     for name, fn, known_bug in TESTS:
         if only and only.lower() not in name.lower():
@@ -183,11 +193,9 @@ def run_tests(only: Optional[str] = None) -> int:
             failed += 1
             print(f"[ERROR] {name}: {type(e).__name__}: {e}")
     print("-" * 70)
-    print(f"Итого: PASS={passed}  FAIL={failed}  (из них известных багов={known})")
+    print(f"Итого: PASS={passed}  FAIL={failed}  (известных багов={known})")
     return 0 if failed == 0 else 1
 
-
-# ---------- replay / analyze ----------
 
 def load_position_file(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
@@ -198,7 +206,6 @@ def cmd_replay(path: str):
     data = load_position_file(path)
     b = from_moves(data["moves"])
     print(f"Позиция: {data.get('name', path)}")
-    print(f"Ходов: {len(data['moves'])}")
     print(ascii_board(b))
 
 
@@ -206,29 +213,24 @@ def cmd_analyze(path: str, side: str):
     data = load_position_file(path)
     b = from_moves(data["moves"])
     player = PLAYER_X if side.upper() == "X" else PLAYER_O
-    print(f"Анализ за {side.upper()} для позиции: {data.get('name', path)}")
     print(ascii_board(b))
     move = get_best_move(b, player)
     print(f"\nВыбран ход: {move}")
-    print("\n--- лог анализа ---")
     print("\n".join(DEBUG_LOG))
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Гомоку: этап 0 — тесты, replay, анализ")
+    ap = argparse.ArgumentParser()
     ap.add_argument("--test", action="store_true")
     ap.add_argument("--only", type=str)
     ap.add_argument("--replay", type=str)
     ap.add_argument("--analyze", type=str)
     ap.add_argument("--side", type=str, default="X")
     args = ap.parse_args()
-
     if args.replay:
-        cmd_replay(args.replay)
-        return 0
+        cmd_replay(args.replay); return 0
     if args.analyze:
-        cmd_analyze(args.analyze, args.side)
-        return 0
+        cmd_analyze(args.analyze, args.side); return 0
     return run_tests(only=args.only)
 
 

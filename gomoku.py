@@ -2,6 +2,10 @@ import tkinter as tk
 from tkinter import messagebox
 from typing import Optional, List, Tuple, Dict
 import threading
+from gomoku_analysis import (
+    analyze_threats, is_double_threat_new, describe,
+    FIVE, LIVE_FOUR, FOUR, LIVE_THREE, SLEEPING_THREE,
+)
 
 # Константы
 EMPTY = 0
@@ -217,93 +221,17 @@ def generate_threat_moves(board: Board, player: int) -> List[Tuple[int, int]]:
 
 
 def count_all_open_threes(board: Board, player: int, debug: bool = False) -> int:
-    count = 0
-    directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
-    seen = set()
-
-    for x, y, p in board.move_history:
-        if p != player:
-            continue
-        for dx, dy in directions:
-            if (board.get_cell(x, y) == player and
-                    board.get_cell(x + dx, y + dy) == player and
-                    board.get_cell(x + 2 * dx, y + 2 * dy) == player):
-
-                if board.get_cell(x - dx, y - dy) == player:
-                    continue
-                if board.get_cell(x + 3 * dx, y + 3 * dy) == player:
-                    continue
-
-                if (board.get_cell(x - dx, y - dy) == EMPTY and
-                        board.get_cell(x + 3 * dx, y + 3 * dy) == EMPTY):
-                    end1 = (x, y)
-                    end2 = (x + 2 * dx, y + 2 * dy)
-                    key = (min(end1, end2), max(end1, end2), dx, dy, 'cont')
-                    if key not in seen:
-                        seen.add(key)
-                        count += 1
-                        if debug:
-                            log(f"    Непрерывная: ({x},{y})-({x + dx},{y + dy})-({x + 2 * dx},{y + 2 * dy})")
-
-            elif (board.get_cell(x, y) == player and
-                  board.get_cell(x + dx, y + dy) == EMPTY and
-                  board.get_cell(x + 2 * dx, y + 2 * dy) == player and
-                  board.get_cell(x + 3 * dx, y + 3 * dy) == player):
-
-                if (board.get_cell(x - dx, y - dy) == EMPTY and
-                        board.get_cell(x + 4 * dx, y + 4 * dy) == EMPTY):
-                    cells = tuple(sorted([(x, y), (x + 2 * dx, y + 2 * dy), (x + 3 * dx, y + 3 * dy)]))
-                    gap = (x + dx, y + dy)
-                    key = (cells, gap, dx, dy, 'gap1')
-                    if key not in seen:
-                        seen.add(key)
-                        count += 1
-                        if debug:
-                            log(f"    С разрывом X_XX: ({x},{y})_({x + 2 * dx},{y + 2 * dy})-({x + 3 * dx},{y + 3 * dy})")
-
-            elif (board.get_cell(x, y) == player and
-                  board.get_cell(x + dx, y + dy) == player and
-                  board.get_cell(x + 2 * dx, y + 2 * dy) == EMPTY and
-                  board.get_cell(x + 3 * dx, y + 3 * dy) == player):
-
-                if (board.get_cell(x - dx, y - dy) == EMPTY and
-                        board.get_cell(x + 4 * dx, y + 4 * dy) == EMPTY):
-                    cells = tuple(sorted([(x, y), (x + dx, y + dy), (x + 3 * dx, y + 3 * dy)]))
-                    gap = (x + 2 * dx, y + 2 * dy)
-                    key = (cells, gap, dx, dy, 'gap2')
-                    if key not in seen:
-                        seen.add(key)
-                        count += 1
-                        if debug:
-                            log(f"    С разрывом XX_X: ({x},{y})-({x + dx},{y + dy})_({x + 3 * dx},{y + 3 * dy})")
-
-    return count
-
+    """Этап 2: считаем только ЖИВЫЕ тройки (способные стать живой четвёркой)."""
+    threats = analyze_threats(board, player)
+    live = [t for t in threats if t.kind == LIVE_THREE]
+    if debug:
+        for t in live:
+            log(f"    живая тройка: камни={t.stones} ключевые={t.points}")
+    return len(live)
 
 def check_double_threat(board: Board, player: int) -> bool:
-    open_threes = count_all_open_threes(board, player)
-    if open_threes >= 2:
-        return True
-    open_fours = 0
-    closed_fours = 0
-    directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
-    for x, y, p in board.move_history:
-        if p != player:
-            continue
-        for dx, dy in directions:
-            length, open_ends = count_line(board, x, y, dx, dy, player)
-            if length == 4:
-                if open_ends == 2:
-                    open_fours += 1
-                elif open_ends == 1:
-                    closed_fours += 1
-    if open_fours >= 1:
-        return True
-    if closed_fours >= 2:
-        return True
-    if open_threes >= 1 and closed_fours >= 1:
-        return True
-    return False
+    """Этап 2: вилки считаются по уникальным угрозам нового анализатора."""
+    return is_double_threat_new(board, player)
 
 
 def search_vcf(board: Board, depth: int, player: int, is_attacking: bool,
@@ -784,6 +712,12 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
 
     vcf_depth = 20 if my_stones >= 4 and opp_stones >= 3 else 8
     vct_depth = 15 if my_stones >= 3 and opp_stones >= 2 else 6
+
+    # ВРЕМЕННО до этапа 3: генерация защит ещё неверна, а check_double_threat
+    # больше не обрывает поиск на первом полуходе. Ограничиваем глубину,
+    # чтобы ИИ не зависал. Снять после починки search_vcf.
+    vcf_depth = min(vcf_depth, 8)
+    vct_depth = min(vct_depth, 6)
 
     log("\n[ШАГ 1] Мгновенный выигрыш ИИ")
     immediate_win = check_immediate_win(board, player)

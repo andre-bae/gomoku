@@ -222,8 +222,44 @@ def is_winning_threat_set(threats: Iterable[Threat]) -> bool:
     return False
 
 
+def _other(player: int) -> int:
+    return PLAYER_O if player == PLAYER_X else PLAYER_X
+
+
+def _fork_survives(board, player: int, cells) -> bool:
+    """
+    Уточнение: может ли ОДИН ход защитника погасить сразу все угрозы.
+    Пробуем клетки-кандидаты (точки достройки четвёрок и ключевые точки троек).
+    Если после какой-то из них не остаётся ни четвёрок, ни живых троек —
+    это не вилка.
+    """
+    defender = _other(player)
+    for (x, y) in sorted(cells):
+        if board.get_cell(x, y) != EMPTY:
+            continue
+        board.grid[(x, y)] = defender
+        try:
+            th = analyze_threats(board, player)
+            has_four = any(t.kind in (FIVE, LIVE_FOUR, FOUR) for t in th)
+            live = sum(1 for t in th if t.kind == LIVE_THREE)
+        finally:
+            del board.grid[(x, y)]
+        if not has_four and live == 0:
+            return False
+    return True
+
+
 def is_double_threat_new(board, player: int) -> bool:
-    return is_winning_threat_set(analyze_threats(board, player))
+    threats = analyze_threats(board, player)
+    if not is_winning_threat_set(threats):
+        return False
+    if any(t.kind in (FIVE, LIVE_FOUR) for t in threats):
+        return True
+    cells = set()
+    for t in threats:
+        if t.kind in (FOUR, LIVE_THREE):
+            cells.update(t.points)
+    return _fork_survives(board, player, cells)
 
 
 def describe(threats: Iterable[Threat]) -> str:
