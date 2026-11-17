@@ -2,8 +2,10 @@ import tkinter as tk
 from tkinter import messagebox
 from typing import Optional, List, Tuple, Dict
 import threading
+
 from gomoku_analysis import (
-    analyze_threats, is_double_threat_new, describe,
+    analyze_threats, is_double_threat_new, is_winning_threat_set,
+    completion_points, four_move_candidates, describe,
     FIVE, LIVE_FOUR, FOUR, LIVE_THREE, SLEEPING_THREE,
 )
 
@@ -174,40 +176,33 @@ def count_line_with_gap(board: Board, x: int, y: int, dx: int, dy: int, player: 
 
 
 def get_potential_threats(board: Board, x: int, y: int, player: int) -> List[str]:
+    """Этап 3: метки угроз берутся из анализатора, только по угрозам с новым камнем."""
+    if not board.is_empty(x, y):
+        return []
     board.make_move(x, y, player)
-    threats = []
-    directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
-    for dx, dy in directions:
-        length, open_ends = count_line(board, x, y, dx, dy, player)
-        if length >= 5:
-            threats.append('five')
-        elif length == 4 and open_ends == 2:
-            threats.append('open_four')
-        elif length == 4 and open_ends == 1:
-            threats.append('closed_four')
-        elif length == 3 and open_ends == 2:
-            threats.append('open_three')
-        else:
-            length_gap, gaps, open_ends_gap = count_line_with_gap(board, x, y, dx, dy, player)
-            if length_gap >= 5:
-                threats.append('five')
-            elif length_gap == 4 and gaps == 1 and open_ends_gap == 2:
-                threats.append('open_four')
-            elif length_gap == 4 and gaps == 1 and open_ends_gap == 1:
-                threats.append('closed_four')
-            elif length_gap == 3 and gaps == 1 and open_ends_gap == 2:
-                threats.append('open_three')
-    board.undo_move()
-    return threats
-
+    try:
+        threats = analyze_threats(board, player)
+    finally:
+        board.undo_move()
+    out = []
+    for t in threats:
+        if (x, y) not in t.stones:
+            continue
+        if t.kind == FIVE:
+            out.append('five')
+        elif t.kind == LIVE_FOUR:
+            out.append('open_four')
+        elif t.kind == FOUR:
+            out.append('closed_four')
+        elif t.kind == LIVE_THREE:
+            out.append('open_three')
+        elif t.kind == SLEEPING_THREE:
+            out.append('closed_three')
+    return list(dict.fromkeys(out))
 
 def generate_four_moves(board: Board, player: int) -> List[Tuple[int, int]]:
-    moves = []
-    for x, y in board.get_candidate_moves(radius=2):
-        threats = get_potential_threats(board, x, y, player)
-        if 'open_four' in threats or 'closed_four' in threats or 'five' in threats:
-            moves.append((x, y))
-    return moves
+    """Этап 3: точный и быстрый критерий через окна анализатора."""
+    return sorted(four_move_candidates(board, player))
 
 
 def generate_threat_moves(board: Board, player: int) -> List[Tuple[int, int]]:
@@ -235,133 +230,93 @@ def check_double_threat(board: Board, player: int) -> bool:
 
 
 def search_vcf(board: Board, depth: int, player: int, is_attacking: bool,
-               debug_path: List[str] = None, indent: int = 0) -> Optional[Tuple[int, int]]:
-    if debug_path is None:
-        debug_path = []
+               path=None, indent: int = 0, budget=None) -> Optional[Tuple[int, int]]:
+    """
+    Этап 3. Форсированный выигрыш серией четвёрок.
+    Защита = точки достройки пятёрки атакующего (а не свои четвёрки защитника).
+    Выигрыш засчитывается только если ПРОИГРЫВАЮТ ВСЕ защиты.
+    Терминальные позиции проверяются до отсечения по глубине.
+    """
+    if path is None:
+        path = []
+    if budget is not None:
+        if budget[0] <= 0:
+            return None
+        budget[0] -= 1
 
-    if depth == 0:
+    attacker = player if is_attacking else (PLAYER_O if player == PLAYER_X else PLAYER_X)
+    defender = PLAYER_O if attacker == PLAYER_X else PLAYER_X
+    ind = "  " * indent
+
+    # защитник собирает пятёрку первым — VCF атакующего не работает
+    if completion_points(board, defender):
         return None
 
-    attacking_player = player if is_attacking else (PLAYER_O if player == PLAYER_X else PLAYER_X)
-    defending_player = PLAYER_O if attacking_player == PLAYER_X else PLAYER_X
+    win_now = completion_points(board, attacker)
+    if win_now:
+        m = sorted(win_now)[0]
+        log(f"{ind}VCF: пятёрка {m} | путь: {' -> '.join(path + [f'{player_name(attacker)}{m}'])}")
+        return m
 
-    candidate_moves = generate_four_moves(board, attacking_player)
-
-    if not candidate_moves:
+    if depth <= 0:
         return None
 
-    indent_str = "  " * indent
-    log(f"{indent_str}VCF поиск (глубина {depth}, {player_name(attacking_player)} атакует): "
-        f"{len(candidate_moves)} четвёрок -> {candidate_moves[:10]}")
+    moves = generate_four_moves(board, attacker)
+    if not moves:
+        return None
+    log(f"{ind}VCF d={depth} {player_name(attacker)}: {len(moves)} четвёрок -> {moves}")
 
-    for move in candidate_moves:
-        board.make_move(move[0], move[1], attacking_player)
+    for move in moves:
+        board.make_move(move[0], move[1], attacker)
+        tag = f"{player_name(attacker)}{move}"
 
-        is_five = check_five(board, attacking_player)
-        is_double = check_double_threat(board, attacking_player)
-
-        if is_five:
-            log(f"{indent_str}VCF: пятёрка в {move}! Путь: "
-                f"{' -> '.join(debug_path + [f'{player_name(attacking_player)}{move}'])}")
+        if check_five(board, attacker):
+            log(f"{ind}VCF: пятёрка {move} | путь: {' -> '.join(path + [tag])}")
             board.undo_move()
             return move
 
-        if is_double:
-            log(f"{indent_str}VCF: вилка в {move}! Путь: "
-                f"{' -> '.join(debug_path + [f'{player_name(attacking_player)}{move}'])}")
+        # защитник может выиграть сразу — эта атака не годится
+        if completion_points(board, defender):
+            board.undo_move()
+            continue
+
+        threats = analyze_threats(board, attacker)
+        if is_winning_threat_set(threats) and is_double_threat_new(board, attacker):
+            log(f"{ind}VCF: неустранимая угроза после {move}")
+            log(f"{ind}  путь: {' -> '.join(path + [tag])}")
+            log(f"{ind}  угрозы: {describe(threats)}")
             board.undo_move()
             return move
 
-        defense_moves = generate_four_moves(board, defending_player)
-
-        if len(defense_moves) == 0:
-            log(f"{indent_str}VCF: нет защиты после {move}! Путь: "
-                f"{' -> '.join(debug_path + [f'{player_name(attacking_player)}{move}'])}")
+        defenses = sorted({p for t in threats if t.kind in (FOUR, LIVE_FOUR) for p in t.points})
+        if not defenses:
             board.undo_move()
+            continue
+
+        all_defenses_lose = True
+        for d in defenses:
+            board.make_move(d[0], d[1], defender)
+            res = search_vcf(board, depth - 2, player, is_attacking,
+                             path + [tag, f"{player_name(defender)}{d}"],
+                             indent + 1, budget)
+            board.undo_move()
+            if res is None:
+                all_defenses_lose = False
+                break
+
+        board.undo_move()
+        if all_defenses_lose:
             return move
-
-        if is_attacking:
-            found_win = False
-            for defense in defense_moves[:2]:
-                board.make_move(defense[0], defense[1], defending_player)
-                log(f"{indent_str}  {player_name(attacking_player)}{move} -> "
-                    f"{player_name(defending_player)}{defense}")
-                result = search_vcf(board, depth - 2, player, is_attacking,
-                                    debug_path + [f'{player_name(attacking_player)}{move}',
-                                                  f'{player_name(defending_player)}{defense}'],
-                                    indent + 1)
-                board.undo_move()
-                if result:
-                    found_win = True
-                    break
-            board.undo_move()
-            if found_win:
-                return move
-        else:
-            all_defenses_fail = True
-            for defense in defense_moves[:2]:
-                board.make_move(defense[0], defense[1], defending_player)
-                log(f"{indent_str}  {player_name(attacking_player)}{move} -> "
-                    f"{player_name(defending_player)}{defense}")
-                result = search_vcf(board, depth - 2, player, is_attacking,
-                                    debug_path + [f'{player_name(attacking_player)}{move}',
-                                                  f'{player_name(defending_player)}{defense}'],
-                                    indent + 1)
-                board.undo_move()
-                if not result:
-                    all_defenses_fail = False
-                    break
-            board.undo_move()
-            if all_defenses_fail:
-                return move
 
     return None
-
 
 def search_vct(board: Board, depth: int, player: int, is_attacking: bool) -> Optional[Tuple[int, int]]:
-    if depth == 0:
-        return None
-    attacking_player = player if is_attacking else (PLAYER_O if player == PLAYER_X else PLAYER_X)
-    defending_player = PLAYER_O if attacking_player == PLAYER_X else PLAYER_X
-    vcf_move = search_vcf(board, depth, player, is_attacking)
-    if vcf_move:
-        return vcf_move
-    candidate_moves = generate_threat_moves(board, attacking_player)
-    for move in candidate_moves:
-        board.make_move(move[0], move[1], attacking_player)
-        if check_double_threat(board, attacking_player):
-            board.undo_move()
-            return move
-        defense_moves = generate_four_moves(board, defending_player)
-        if len(defense_moves) == 0:
-            board.undo_move()
-            return move
-        if is_attacking:
-            found_win = False
-            for defense in defense_moves[:2]:
-                board.make_move(defense[0], defense[1], defending_player)
-                if search_vct(board, depth - 2, player, is_attacking):
-                    found_win = True
-                board.undo_move()
-                if found_win:
-                    break
-            board.undo_move()
-            if found_win:
-                return move
-        else:
-            all_defenses_fail = True
-            for defense in defense_moves[:2]:
-                board.make_move(defense[0], defense[1], defending_player)
-                if not search_vct(board, depth - 2, player, is_attacking):
-                    all_defenses_fail = False
-                board.undo_move()
-                if not all_defenses_fail:
-                    break
-            board.undo_move()
-            if all_defenses_fail:
-                return move
+    """
+    ВРЕМЕННО (этап 6): старая логика VCT некорректна — после хода-тройки
+    у защитника десятки легальных ответов, а не только его четвёрки.
+    Отключено, чтобы не выдавать фиктивные выигрыши.
+    """
     return None
-
 
 def debug_dump_all_threes(board: Board, player: int):
     log(f"  --- Все тройки {player_name(player)} ---")
@@ -713,11 +668,7 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     vcf_depth = 20 if my_stones >= 4 and opp_stones >= 3 else 8
     vct_depth = 15 if my_stones >= 3 and opp_stones >= 2 else 6
 
-    # ВРЕМЕННО до этапа 3: генерация защит ещё неверна, а check_double_threat
-    # больше не обрывает поиск на первом полуходе. Ограничиваем глубину,
-    # чтобы ИИ не зависал. Снять после починки search_vcf.
-    vcf_depth = min(vcf_depth, 8)
-    vct_depth = min(vct_depth, 6)
+    vcf_budget = [2000]   # предохранитель по числу узлов, снимается на этапе 5
 
     log("\n[ШАГ 1] Мгновенный выигрыш ИИ")
     immediate_win = check_immediate_win(board, player)
@@ -739,7 +690,8 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     if my_stones >= 3:
         four_moves = generate_four_moves(board, player)
         log(f"  Четверочных ходов: {len(four_moves)} -> {four_moves[:5]}")
-        vcf_move = search_vcf(board, depth=vcf_depth, player=player, is_attacking=True)
+        vcf_move = search_vcf(board, depth=vcf_depth, player=player,
+                              is_attacking=True, budget=vcf_budget)
         if vcf_move:
             log(f"  -> НАЙДЕН: {vcf_move}")
             log(f"\n=== Финальный ход: {vcf_move} ===")
@@ -776,7 +728,8 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     if opp_stones >= 3:
         opp_four = generate_four_moves(board, opponent)
         log(f"  Четверочных ходов противника: {len(opp_four)} -> {opp_four[:5]}")
-        opponent_vcf = search_vcf(board, depth=vcf_depth, player=player, is_attacking=False)
+        opponent_vcf = search_vcf(board, depth=vcf_depth, player=player,
+                                  is_attacking=False, budget=vcf_budget)
         if opponent_vcf:
             log(f"  -> НАЙДЕНА угроза: {opponent_vcf}")
             final_move = find_blocking_move(board, opponent_vcf, player)

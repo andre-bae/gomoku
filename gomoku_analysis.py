@@ -268,3 +268,38 @@ def describe(threats: Iterable[Threat]) -> str:
     for t in sorted(threats, key=lambda z: (z.kind, z.direction, z.stones)):
         lines.append(f"{t.kind:15s} dir={t.direction} камни={t.stones} точки={t.points}")
     return "\n".join(lines) if lines else "(угроз нет)"
+
+
+def four_move_candidates(board, player: int):
+    """
+    Клетки, ход в которые создаёт четвёрку или пятёрку.
+    Точный критерий: пустая клетка окна из 5, где уже >=3 наших камней
+    и нет камней противника. Один проход по линиям, без симуляций.
+    """
+    opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
+    res = set()
+    for (didx, inv), ts in _collect_lines(board, player).items():
+        lo, hi = min(ts) - MARGIN, max(ts) + MARGIN
+        coords = [_coord(didx, t, inv) for t in range(lo, hi + 1)]
+        vals = [board.get_cell(x, y) for (x, y) in coords]
+        for a, b in _split_opponent(vals, opponent):
+            sv, sc = vals[a:b], coords[a:b]
+            n = len(sv)
+            for s in range(n - WIN_LEN + 1):
+                stones = 0
+                empties = []
+                bad = False
+                for i in range(s, s + WIN_LEN):
+                    v = sv[i]
+                    if v == opponent:
+                        bad = True
+                        break
+                    if v == player:
+                        stones += 1
+                    else:
+                        empties.append(i)
+                if bad or stones < 3:
+                    continue
+                for i in empties:
+                    res.add(sc[i])
+    return res

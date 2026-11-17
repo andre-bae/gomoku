@@ -103,8 +103,7 @@ def test_log_position_x31_not_fork():
 
 # ---------- остаётся на этап 3 ----------
 
-@case("разрывная четвёрка — одна точка пятёрки в get_potential_threats",
-      known_bug="этап 3: get_potential_threats ещё старый, помечает .XX_XX. как open_four")
+@case("разрывная четвёрка — одна точка пятёрки в get_potential_threats")
 def test_gap_four_single_completion():
     b = build([(0, 0), (1, 0), (3, 0)], [])
     threats = get_potential_threats(b, 4, 0, PLAYER_X)
@@ -112,8 +111,7 @@ def test_gap_four_single_completion():
     assert "open_four" not in threats
 
 
-@case("одна закрытая тройка — VCF нет",
-      known_bug="этап 3: defense_moves ищет свои четвёрки защитника вместо блокировки")
+@case("одна закрытая тройка — VCF нет")
 def test_single_closed_three_no_vcf():
     b = build([(0, 0), (1, 0), (2, 0)], [(-1, 0)])
     assert check_immediate_win(b, PLAYER_X) is None
@@ -121,8 +119,7 @@ def test_single_closed_three_no_vcf():
     assert move is None, f"найдено {move}"
 
 
-@case("позиция из лога после O(2,-3) — VCF у X нет",
-      known_bug="этап 3: неверная генерация защит в search_vcf")
+@case("позиция из лога после O(2,-3) — VCF у X нет")
 def test_log_position_no_vcf():
     moves = [
         ["O", 0, 0], ["X", 1, -1], ["O", 2, 2], ["X", 0, -2],
@@ -162,6 +159,13 @@ def test_open_three_blocks():
     b = build([(0, 0), (1, 0), (2, 0)], [(10, 10)])
     blocks = find_all_open_three_blocks(b, PLAYER_X)
     assert (-1, 0) in blocks and (3, 0) in blocks
+
+
+@case("VCF находит живую четвёрку")
+def test_vcf_finds_live_four():
+    b = build([(0, 0), (1, 0), (2, 0)], [(10, 10)])
+    move = search_vcf(b, depth=6, player=PLAYER_X, is_attacking=True)
+    assert move in {(-1, 0), (3, 0)}, f"ожидалась живая четвёрка, получено {move}"
 
 
 # ---------- раннер и утилиты ----------
