@@ -357,63 +357,56 @@ def debug_dump_all_threes(board: Board, player: int):
 
 
 def find_all_open_three_blocks(board: Board, player: int) -> List[Tuple[int, int]]:
-    directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
-    threats = []
-    seen = set()
+    """Этап 4: ключевые точки живых троек из анализатора (а не старые паттерны)."""
+    points = set()
+    for t in analyze_threats(board, player):
+        if t.kind == LIVE_THREE:
+            points.update(t.points)
+    return sorted(points)
 
-    for x, y, p in board.move_history:
-        if p != player:
+def find_vcf_defense(board: Board, player: int, depth: int = 12,
+                     known_threat: Optional[Tuple[int, int]] = None) -> Optional[Tuple[int, int]]:
+    """
+    Этап 4. Ищем ход, после которого у противника НЕ остаётся VCF.
+    Кандидаты: клетка первого хода VCF, точки достройки его четвёрок,
+    ключевые точки живых троек, наши контр-четвёрки.
+    Каждый кандидат проверяется повторным поиском.
+    """
+    opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
+
+    threat = known_threat
+    if threat is None:
+        threat = search_vcf(board, depth=depth, player=opponent,
+                            is_attacking=True, budget=[2000])
+    if threat is None:
+        return None
+
+    candidates = {threat}
+    candidates.update(completion_points(board, opponent))
+    for t in analyze_threats(board, opponent):
+        if t.kind == LIVE_THREE:
+            candidates.update(t.points)
+    candidates.update(generate_four_moves(board, player))   # контр-четвёрки
+
+    verified = []
+    for move in sorted(candidates):
+        if not board.is_empty(move[0], move[1]):
             continue
-        for dx, dy in directions:
-            if (board.get_cell(x, y) == player and
-                    board.get_cell(x + dx, y + dy) == player and
-                    board.get_cell(x + 2 * dx, y + 2 * dy) == player):
+        board.make_move(move[0], move[1], player)
+        still = search_vcf(board, depth=depth, player=opponent,
+                           is_attacking=True, budget=[2000])
+        if still is None:
+            score = evaluate_position(board, player)
+            verified.append((score, move))
+            log(f"    защита {move} опровергает VCF (оценка {score})")
+        else:
+            log(f"    защита {move} не помогает: VCF {still}")
+        board.undo_move()
 
-                if board.get_cell(x - dx, y - dy) == player:
-                    continue
-                if board.get_cell(x + 3 * dx, y + 3 * dy) == player:
-                    continue
-
-                if (board.get_cell(x - dx, y - dy) == EMPTY and
-                        board.get_cell(x + 3 * dx, y + 3 * dy) == EMPTY):
-                    end1 = (x, y)
-                    end2 = (x + 2 * dx, y + 2 * dy)
-                    key = (min(end1, end2), max(end1, end2), dx, dy, 'cont')
-                    if key not in seen:
-                        seen.add(key)
-                        threats.append((x - dx, y - dy))
-                        threats.append((x + 3 * dx, y + 3 * dy))
-
-            elif (board.get_cell(x, y) == player and
-                  board.get_cell(x + dx, y + dy) == EMPTY and
-                  board.get_cell(x + 2 * dx, y + 2 * dy) == player and
-                  board.get_cell(x + 3 * dx, y + 3 * dy) == player):
-
-                if (board.get_cell(x - dx, y - dy) == EMPTY and
-                        board.get_cell(x + 4 * dx, y + 4 * dy) == EMPTY):
-                    cells = tuple(sorted([(x, y), (x + 2 * dx, y + 2 * dy), (x + 3 * dx, y + 3 * dy)]))
-                    gap = (x + dx, y + dy)
-                    key = (cells, gap, dx, dy, 'gap1')
-                    if key not in seen:
-                        seen.add(key)
-                        threats.append((x + dx, y + dy))
-
-            elif (board.get_cell(x, y) == player and
-                  board.get_cell(x + dx, y + dy) == player and
-                  board.get_cell(x + 2 * dx, y + 2 * dy) == EMPTY and
-                  board.get_cell(x + 3 * dx, y + 3 * dy) == player):
-
-                if (board.get_cell(x - dx, y - dy) == EMPTY and
-                        board.get_cell(x + 4 * dx, y + 4 * dy) == EMPTY):
-                    cells = tuple(sorted([(x, y), (x + dx, y + dy), (x + 3 * dx, y + 3 * dy)]))
-                    gap = (x + 2 * dx, y + 2 * dy)
-                    key = (cells, gap, dx, dy, 'gap2')
-                    if key not in seen:
-                        seen.add(key)
-                        threats.append((x + 2 * dx, y + 2 * dy))
-
-    return threats
-
+    if not verified:
+        return None
+    verified.sort(key=lambda x: (-x[0], x[1]))
+    return verified[0][1]
 
 def evaluate_threats_after_move(board: Board, player: int) -> Tuple[int, str]:
     max_level = 0
@@ -458,6 +451,10 @@ def evaluate_threats_after_move(board: Board, player: int) -> Tuple[int, str]:
 
 
 def block_open_three_threats(board: Board, player: int) -> Optional[Tuple[int, int]]:
+    """
+    Этап 4. Блокируем живую тройку, но НЕ возвращаем блок,
+    после которого противник всё равно выигрывает VCF.
+    """
     if len(board.move_history) < 4:
         log("  (пропущено: ходов < 4)")
         return None
@@ -465,70 +462,32 @@ def block_open_three_threats(board: Board, player: int) -> Optional[Tuple[int, i
     debug_dump_all_threes(board, opponent)
 
     threats = find_all_open_three_blocks(board, opponent)
-    log(f"  find_all_open_three_blocks вернул: {threats}")
-
+    log(f"  ключевые точки живых троек: {threats}")
     if not threats:
         return None
 
-    free_blocks = []
-    for t in threats:
-        if board.is_empty(t[0], t[1]):
-            free_blocks.append(t)
-            log(f"    {t} — ПУСТА")
-        else:
-            log(f"    {t} — ЗАНЯТА ({player_name(board.get_cell(t[0], t[1]))})")
-
-    if not free_blocks:
-        return None
-
-    best_block = None
-    best_score = -float('inf')
-
-    for block_move in free_blocks:
-        log(f"    Проверяем блокировку {block_move}, ходов на доске: {len(board.move_history)}")
+    safe = []
+    for block_move in threats:
+        if not board.is_empty(block_move[0], block_move[1]):
+            continue
         board.make_move(block_move[0], block_move[1], player)
-        log(f"    После make_move, ходов на доске: {len(board.move_history)}")
-
-        max_threat_level, threat_desc = evaluate_threats_after_move(board, opponent)
-        log(f"    После evaluate_threats, ходов на доске: {len(board.move_history)}")
-
-        penalty = 0
-        if max_threat_level >= 4:
-            penalty = 1000000
-        elif max_threat_level == 3:
-            penalty = 100000
-        elif max_threat_level == 2:
-            penalty = 20000
-        elif max_threat_level == 1:
-            penalty = 5000
-
-        score = evaluate_position(board, player) - penalty
-
-        # Увеличили глубину VCF с 4 до 6
-        if max_threat_level >= 2:
-            log(f"      Запуск поиска VCF противника (глубина 6)...")
-            log(f"      Перед search_vcf, ходов на доске: {len(board.move_history)}")
-            vcf_found = search_vcf(board, depth=6, player=opponent, is_attacking=True)
-            log(f"      После search_vcf, ходов на доске: {len(board.move_history)}")
-            if vcf_found:
-                log(f"      ВНИМАНИЕ: после блокировки {block_move} противник может создать VCF!")
-                penalty += 50000
-                score -= 50000
-            else:
-                log(f"      VCF противника не найден")
-
+        vcf = search_vcf(board, depth=12, player=opponent,
+                         is_attacking=True, budget=[1500])
+        if vcf is None:
+            level, desc = evaluate_threats_after_move(board, opponent)
+            penalty = {4: 1000000, 3: 100000, 2: 20000, 1: 5000}.get(level, 0)
+            score = evaluate_position(board, player) - penalty
+            safe.append((score, block_move))
+            log(f"    блок {block_move} безопасен, оценка {score} (угроза {level}: {desc})")
+        else:
+            log(f"    блок {block_move} ПРОИГРЫВАЕТ: VCF {vcf}")
         board.undo_move()
-        log(f"    После undo_move, ходов на доске: {len(board.move_history)}")
 
-        log(f"    Оценка после блокировки {block_move}: {score}")
-        log(f"      Макс. угроза противника: уровень {max_threat_level} ({threat_desc})")
-
-        if score > best_score:
-            best_score = score
-            best_block = block_move
-
-    return best_block
-
+    if not safe:
+        log("  все блокировки живых троек проигрывают VCF — блок не возвращаем")
+        return None
+    safe.sort(key=lambda x: (-x[0], x[1]))
+    return safe[0][1]
 
 def find_own_fork(board: Board, player: int) -> Optional[Tuple[int, int]]:
     for x, y in board.get_candidate_moves(radius=2):
@@ -666,121 +625,91 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     log(f"Камней: {player_name(player)}={my_stones}, {player_name(opponent)}={opp_stones}")
 
     vcf_depth = 20 if my_stones >= 4 and opp_stones >= 3 else 8
-    vct_depth = 15 if my_stones >= 3 and opp_stones >= 2 else 6
-
-    vcf_budget = [2000]   # предохранитель по числу узлов, снимается на этапе 5
+    vcf_budget = [2000]
 
     log("\n[ШАГ 1] Мгновенный выигрыш ИИ")
     immediate_win = check_immediate_win(board, player)
     if immediate_win:
         log(f"  -> НАЙДЕН: {immediate_win}")
-        log(f"\n=== Финальный ход: {immediate_win} ===")
         return immediate_win
     log("  -> не найден")
 
-    log(f"\n[ШАГ 2] Мгновенная защита от выигрыша {player_name(opponent)}")
-    opponent_immediate_win = check_immediate_win(board, opponent)
-    if opponent_immediate_win:
-        log(f"  -> НАЙДЕНА угроза: {opponent_immediate_win}")
-        log(f"\n=== Финальный ход: {opponent_immediate_win} ===")
-        return opponent_immediate_win
+    log(f"\n[ШАГ 2] Мгновенная защита от пятёрки {player_name(opponent)}")
+    opp_win = check_immediate_win(board, opponent)
+    if opp_win:
+        log(f"  -> блокируем: {opp_win}")
+        return opp_win
     log("  -> не найдена")
 
     log(f"\n[ШАГ 3] Свой VCF (глубина {vcf_depth})")
     if my_stones >= 3:
-        four_moves = generate_four_moves(board, player)
-        log(f"  Четверочных ходов: {len(four_moves)} -> {four_moves[:5]}")
         vcf_move = search_vcf(board, depth=vcf_depth, player=player,
                               is_attacking=True, budget=vcf_budget)
         if vcf_move:
             log(f"  -> НАЙДЕН: {vcf_move}")
-            log(f"\n=== Финальный ход: {vcf_move} ===")
             return vcf_move
         log("  -> не найден")
     else:
         log("  (пропущено: своих камней < 3)")
 
-    log(f"\n[ШАГ 4] Блокировка открытой тройки {player_name(opponent)} (включая с разрывом)")
-    open_three_block = block_open_three_threats(board, player)
-    if open_three_block:
-        log(f"  -> ВЫБРАНА блокировка: {open_three_block}")
-        log(f"\n=== Финальный ход: {open_three_block} ===")
-        return open_three_block
-    log("  -> не выбрана")
-
-    log("\n[ШАГ 5] Своя вилка из открытых троек")
-    own_fork = find_own_fork(board, player)
-    if own_fork:
-        log(f"  -> НАЙДЕНА: {own_fork}")
-        log(f"\n=== Финальный ход: {own_fork} ===")
-        return own_fork
-    log("  -> не найдена")
-
-    log(f"\n[ШАГ 5.5] Блокировка потенциальной вилки {player_name(opponent)}")
-    fork_block = block_potential_fork(board, player)
-    if fork_block:
-        log(f"  -> ВЫБРАНА блокировка: {fork_block}")
-        log(f"\n=== Финальный ход: {fork_block} ===")
-        return fork_block
-    log("  -> не найдена")
-
-    log(f"\n[ШАГ 6] Защита от VCF {player_name(opponent)} (глубина {vcf_depth})")
+    log(f"\n[ШАГ 4] Защита от VCF противника (с перепроверкой)")
     if opp_stones >= 3:
-        opp_four = generate_four_moves(board, opponent)
-        log(f"  Четверочных ходов противника: {len(opp_four)} -> {opp_four[:5]}")
-        opponent_vcf = search_vcf(board, depth=vcf_depth, player=player,
-                                  is_attacking=False, budget=vcf_budget)
-        if opponent_vcf:
-            log(f"  -> НАЙДЕНА угроза: {opponent_vcf}")
-            final_move = find_blocking_move(board, opponent_vcf, player)
-            log(f"\n=== Финальный ход: {final_move} ===")
-            return final_move
-        log("  -> не найдена")
+        opp_vcf = search_vcf(board, depth=vcf_depth, player=opponent,
+                             is_attacking=True, budget=[2000])
+        if opp_vcf:
+            log(f"  VCF противника начинается с {opp_vcf}")
+            defense = find_vcf_defense(board, player, depth=vcf_depth,
+                                       known_threat=opp_vcf)
+            if defense:
+                log(f"  -> защита найдена: {defense}")
+                return defense
+            log("  ни одна защита не опровергает VCF — позиция тактически проиграна")
+            log("  проигрышный блок НЕ возвращаем, переходим к позиционной игре")
+        else:
+            log("  VCF противника нет")
     else:
         log("  (пропущено: камней противника < 3)")
 
-    log(f"\n[ШАГ 7] Свой VCT (глубина {vct_depth})")
-    if my_stones >= 2:
-        threat_moves = generate_threat_moves(board, player)
-        log(f"  Угрозных ходов: {len(threat_moves)} -> {threat_moves[:5]}")
-        vct_move = search_vct(board, depth=vct_depth, player=player, is_attacking=True)
-        if vct_move:
-            log(f"  -> НАЙДЕН: {vct_move}")
-            log(f"\n=== Финальный ход: {vct_move} ===")
-            return vct_move
-        log("  -> не найден")
-    else:
-        log("  (пропущено: своих камней < 2)")
+    log(f"\n[ШАГ 5] Безопасная блокировка живой тройки {player_name(opponent)}")
+    block = block_open_three_threats(board, player)
+    if block:
+        log(f"  -> ВЫБРАНА: {block}")
+        return block
+    log("  -> не выбрана")
 
-    log(f"\n[ШАГ 8] Защита от VCT {player_name(opponent)} (глубина {vct_depth})")
-    if opp_stones >= 2:
-        opponent_vct = search_vct(board, depth=vct_depth, player=player, is_attacking=False)
-        if opponent_vct:
-            log(f"  -> НАЙДЕНА угроза: {opponent_vct}")
-            final_move = find_blocking_move(board, opponent_vct, player)
-            log(f"\n=== Финальный ход: {final_move} ===")
-            return final_move
-        log("  -> не найдена")
-    else:
-        log("  (пропущено: камней противника < 2)")
+    log("\n[ШАГ 6] Своя вилка из живых троек")
+    fork = find_own_fork(board, player)
+    if fork:
+        log(f"  -> НАЙДЕНА: {fork}")
+        return fork
+    log("  -> не найдена")
+
+    log(f"\n[ШАГ 6.5] Блокировка потенциальной вилки {player_name(opponent)}")
+    fork_block = block_potential_fork(board, player)
+    if fork_block:
+        log(f"  -> ВЫБРАНА: {fork_block}")
+        return fork_block
+    log("  -> не найдена")
+
+    log("\n[ШАГ 7-8] VCT временно отключён (этап 6)")
 
     log("\n[ШАГ 9] Позиционный Minimax")
     candidates = board.get_candidate_moves(radius=2)
-    candidates_with_scores = []
+    scored = []
     for x, y in candidates:
         board.make_move(x, y, player)
         score = evaluate_position(board, player)
         board.undo_move()
-        candidates_with_scores.append(((x, y), score))
-    candidates_with_scores.sort(key=lambda x: x[1], reverse=True)
-    log(f"  Топ-10 кандидатов:")
-    for (x, y), s in candidates_with_scores[:10]:
+        scored.append(((x, y), score))
+    scored.sort(key=lambda t: (-t[1], t[0]))
+    log("  Топ-10 кандидатов:")
+    for (x, y), s in scored[:10]:
         log(f"    ({x},{y}) = {s}")
 
     best_score = -float('inf')
-    best_move = candidates_with_scores[0][0]
+    best_move = scored[0][0]
     max_candidates = 7 if len(board.move_history) < 6 else 15
-    for (x, y), _ in candidates_with_scores[:max_candidates]:
+    for (x, y), _ in scored[:max_candidates]:
         board.make_move(x, y, player)
         score = minimax(board, depth=4, alpha=-float('inf'), beta=float('inf'),
                         is_maximizing=False, player=player)

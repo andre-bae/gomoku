@@ -16,6 +16,7 @@ from gomoku import (
     check_double_threat, search_vcf, check_immediate_win,
     find_all_open_three_blocks, get_potential_threats,
     count_all_open_threes, get_best_move, DEBUG_LOG,
+    find_vcf_defense, block_open_three_threats,
 )
 
 
@@ -166,6 +167,34 @@ def test_vcf_finds_live_four():
     b = build([(0, 0), (1, 0), (2, 0)], [(10, 10)])
     move = search_vcf(b, depth=6, player=PLAYER_X, is_attacking=True)
     assert move in {(-1, 0), (3, 0)}, f"ожидалась живая четвёрка, получено {move}"
+
+
+@case("защита от VCF: блок живой тройки опровергает")
+def test_vcf_defense_blocks_live_three():
+    b = build([(0, 0), (1, 0), (2, 0)], [(10, 10)])
+    assert search_vcf(b, depth=6, player=PLAYER_X, is_attacking=True) is not None
+    d = find_vcf_defense(b, PLAYER_O, depth=6)
+    assert d in {(-1, 0), (3, 0)}, f"получено {d}"
+    b.make_move(d[0], d[1], PLAYER_O)
+    assert search_vcf(b, depth=6, player=PLAYER_X, is_attacking=True) is None
+
+
+@case("защита от VCF: контр-четвёрка выигрывает темп")
+def test_counter_four_defense():
+    b = build([(0, 0), (1, 0), (2, 0), (4, 5)],
+              [(5, 5), (6, 5), (7, 5)])
+    assert search_vcf(b, depth=6, player=PLAYER_X, is_attacking=True) is not None
+    d = find_vcf_defense(b, PLAYER_O, depth=6)
+    assert d is not None, "контр-четвёрка должна опровергать VCF"
+    b.make_move(d[0], d[1], PLAYER_O)
+    assert search_vcf(b, depth=6, player=PLAYER_X, is_attacking=True) is None
+
+
+@case("блок тройки не возвращается, если все блоки проигрывают VCF")
+def test_no_safe_block_when_fork():
+    b = build([(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10)])
+    assert check_double_threat(b, PLAYER_X) is True
+    assert block_open_three_threats(b, PLAYER_O) is None
 
 
 # ---------- раннер и утилиты ----------
