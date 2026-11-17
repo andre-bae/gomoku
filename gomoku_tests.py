@@ -16,7 +16,7 @@ from gomoku import (
     check_double_threat, search_vcf, check_immediate_win,
     find_all_open_three_blocks, get_potential_threats,
     count_all_open_threes, get_best_move, DEBUG_LOG,
-    find_vcf_defense, block_open_three_threats,
+    find_vcf_defense, block_open_three_threats, evaluate_position,
 )
 
 
@@ -195,6 +195,46 @@ def test_no_safe_block_when_fork():
     b = build([(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10)])
     assert check_double_threat(b, PLAYER_X) is True
     assert block_open_three_threats(b, PLAYER_O) is None
+
+
+@case("оценка: одна четвёрка не терминал, две — терминал")
+def test_eval_no_double_counting():
+    single = build([(0, 0), (1, 0), (2, 0), (3, 0)], [(-1, 0)])
+    double = build([(0, 0), (1, 0), (2, 0), (3, 0),
+                    (5, 1), (5, 2), (5, 3), (5, 4)], [(-1, 0), (5, 0)])
+    s1 = evaluate_position(single, PLAYER_X, to_move=PLAYER_O)
+    s2 = evaluate_position(double, PLAYER_X, to_move=PLAYER_O)
+    assert s1 < 9_000_000, f"одна закрытая четвёрка не должна быть терминалом: {s1}"
+    assert s2 >= 9_000_000, f"две четвёрки не блокируются одним ходом: {s2}"
+
+
+@case("оценка учитывает темп")
+def test_eval_tempo():
+    b = build([(0, 0), (1, 0), (2, 0), (3, 0)], [(-1, 0)])
+    assert evaluate_position(b, PLAYER_X, to_move=PLAYER_X) >= 9_000_000
+    assert evaluate_position(b, PLAYER_X, to_move=PLAYER_O) < 9_000_000
+
+
+@case("оценка: живая тройка дороже спящей")
+def test_eval_live_vs_sleeping():
+    live = build([(0, 0), (1, 0), (2, 0)], [])
+    sleep = build([(0, 0), (1, 0), (2, 0)], [(-2, 0), (4, 0)])
+    assert evaluate_position(live, PLAYER_X, to_move=PLAYER_O) > \
+           evaluate_position(sleep, PLAYER_X, to_move=PLAYER_O)
+
+
+@case("оценка: мёртвая тройка в коридоре почти ничего не стоит")
+def test_eval_dead_three():
+    b = build([(0, 0), (0, 1), (0, 2)], [(0, -1), (0, 3)])
+    assert abs(evaluate_position(b, PLAYER_X, to_move=PLAYER_O)) < 1000
+
+
+@case("оценка симметрична относительно смены стороны")
+def test_eval_symmetry():
+    b = build([(0, 0), (1, 0), (2, 0)], [(-2, 0), (4, 0)])
+    for t in (PLAYER_X, PLAYER_O):
+        assert evaluate_position(b, PLAYER_X, to_move=t) == \
+               -evaluate_position(b, PLAYER_O, to_move=t)
 
 
 # ---------- раннер и утилиты ----------

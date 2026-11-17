@@ -396,7 +396,7 @@ def find_vcf_defense(board: Board, player: int, depth: int = 12,
         still = search_vcf(board, depth=depth, player=opponent,
                            is_attacking=True, budget=[2000])
         if still is None:
-            score = evaluate_position(board, player)
+            score = evaluate_position(board, player, to_move=opponent)
             verified.append((score, move))
             log(f"    защита {move} опровергает VCF (оценка {score})")
         else:
@@ -476,7 +476,7 @@ def block_open_three_threats(board: Board, player: int) -> Optional[Tuple[int, i
         if vcf is None:
             level, desc = evaluate_threats_after_move(board, opponent)
             penalty = {4: 1000000, 3: 100000, 2: 20000, 1: 5000}.get(level, 0)
-            score = evaluate_position(board, player) - penalty
+            score = evaluate_position(board, player, to_move=opponent)
             safe.append((score, block_move))
             log(f"    блок {block_move} безопасен, оценка {score} (угроза {level}: {desc})")
         else:
@@ -532,83 +532,158 @@ def find_blocking_move(board: Board, threat_move: Tuple[int, int], player: int) 
     return threat_move
 
 
-def evaluate_position(board: Board, player: int) -> int:
-    score = 0
-    directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
-    SCORE_FIVE = 1000000
-    SCORE_OPEN_FOUR = 100000
-    SCORE_CLOSED_FOUR = 10000
-    SCORE_OPEN_THREE = 5000
-    SCORE_GAP_FOUR_OPEN = 8000
-    SCORE_GAP_FOUR_CLOSED = 5000
-    SCORE_GAP_THREE_OPEN = 3000
+def _connectivity(board: Board, player: int) -> int:
+    """Число смежных пар своих камней — дешёвый позиционный член."""
+    total = 0
+    for (x, y), p in board.grid.items():
+        if p != player:
+            continue
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                if board.get_cell(x + dx, y + dy) == player:
+                    total += 1
+    return total // 2
 
-    for p_id in [player, PLAYER_O if player == PLAYER_X else PLAYER_X]:
-        sign = 1 if p_id == player else -1
-        for x, y, p in board.move_history:
-            if p != p_id:
-                continue
-            for dx, dy in directions:
-                length, open_ends = count_line(board, x, y, dx, dy, p_id)
-                if length >= 5:
-                    score += sign * SCORE_FIVE
-                elif length == 4:
-                    if open_ends == 2:
-                        score += sign * SCORE_OPEN_FOUR
-                    elif open_ends == 1:
-                        score += sign * SCORE_CLOSED_FOUR
-                elif length == 3 and open_ends == 2:
-                    score += sign * SCORE_OPEN_THREE
-                length_gap, gaps, open_ends_gap = count_line_with_gap(board, x, y, dx, dy, p_id)
-                if length_gap == 4 and gaps == 1:
-                    if open_ends_gap == 2:
-                        score += sign * SCORE_GAP_FOUR_OPEN
-                    elif open_ends_gap == 1:
-                        score += sign * SCORE_GAP_FOUR_CLOSED
-                elif length_gap == 3 and gaps == 1 and open_ends_gap == 2:
-                    score += sign * SCORE_GAP_THREE_OPEN
+
+def evaluate_position(board: Board, player: int, to_move: Optional[int] = None) -> int:
+    """
+    Этап 5. Оценка по уникальным угрозам анализатора, без двойного учёта.
+    to_move — чей ход в оцениваемой позиции (влияет на темп).
+    """
+    if to_move is None:
+        to_move = player
+    opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
+    WIN = 10_000_000
+
+    my_th = analyze_threats(board, player)
+    op_th = analyze_threats(board, opponent)
+
+    if any(t.kind == FIVE for t in my_th):
+        return WIN
+    if any(t.kind == FIVE for t in op_th):
+        return -WIN
+
+    my_pts = {p for t in my_th if t.kind in (FOUR, LIVE_FOUR) for p in t.points}
+    op_pts = {p for t in op_th if t.kind in (FOUR, LIVE_FOUR) for p in t.points}
+
+    # ходящий собирает пятёрку сейчас
+    if to_move == player and my_pts:
+        return WIN - 1
+    if to_move == opponent and op_pts:
+        return -(WIN - 1)
+    # две точки достройки — не блокируется одним ходом
+    if len(my_pts) >= 2:
+        return WIN - 1
+    if len(op_pts) >= 2:
+        return -(WIN - 1)
+
+    BASE = {LIVE_FOUR: 400_000, FOUR: 50_000, LIVE_THREE: 20_000, SLEEPING_THREE: 2_000}
+    TEMPO = {LIVE_FOUR: 400_000, FOUR: 500_000, LIVE_THREE: 200_000, SLEEPING_THREE: 1_000}
+
+    score = 0
+    for t in my_th:
+        score += BASE.get(t.kind, 0)
+        if to_move == player:
+            score += TEMPO.get(t.kind, 0)
+    for t in op_th:
+        score -= BASE.get(t.kind, 0)
+        if to_move == opponent:
+            score -= TEMPO.get(t.kind, 0)
+
+    score += 25 * (_connectivity(board, player) - _connectivity(board, opponent))
     return score
 
 
+def _order_moves(board: Board, side: int, candidates) -> List[Tuple[Tuple[int, int], int]]:
+    """
+    Этап 5. Быстрая сортировка для alpha-beta: 3 прохода анализатора на узел
+    вместо полной оценки каждого кандидата.
+    """
+    opp = PLAYER_O if side == PLAYER_X else PLAYER_X
+    my_th = analyze_threats(board, side)
+    op_th = analyze_threats(board, opp)
+    my_pts = {p for t in my_th if t.kind in (FOUR, LIVE_FOUR) for p in t.points}
+    op_pts = {p for t in op_th if t.kind in (FOUR, LIVE_FOUR) for p in t.points}
+    my_live3 = {p for t in my_th if t.kind == LIVE_THREE for p in t.points}
+    op_live3 = {p for t in op_th if t.kind == LIVE_THREE for p in t.points}
+    my_four_moves = four_move_candidates(board, side)
+
+    scored = []
+    for (x, y) in candidates:
+        s = 0
+        if (x, y) in my_pts:
+            s += 1_000_000
+        if (x, y) in op_pts:
+            s += 900_000
+        if (x, y) in my_four_moves:
+            s += 50_000
+        if (x, y) in my_live3:
+            s += 20_000
+        if (x, y) in op_live3:
+            s += 15_000
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                v = board.get_cell(x + dx, y + dy)
+                if v == side:
+                    s += 12
+                elif v == opp:
+                    s += 6
+        scored.append(((x, y), s))
+    scored.sort(key=lambda t: (-t[1], t[0]))
+    return scored
+
+
 def minimax(board: Board, depth: int, alpha: int, beta: int,
-            is_maximizing: bool, player: int) -> int:
-    if depth == 0:
-        return evaluate_position(board, player)
+            is_maximizing: bool, player: int, budget=None) -> int:
+    opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
+    current = player if is_maximizing else opponent
+
+    if budget is not None:
+        if budget[0] <= 0:
+            return evaluate_position(board, player, to_move=current)
+        budget[0] -= 1
+
+    # терминал проверяется ДО отсечения по глубине
     if check_five(board, PLAYER_X):
-        return 1000000 if player == PLAYER_X else -1000000
+        return 10_000_000 if player == PLAYER_X else -10_000_000
     if check_five(board, PLAYER_O):
-        return 1000000 if player == PLAYER_O else -1000000
-    current_player = player if is_maximizing else (PLAYER_O if player == PLAYER_X else PLAYER_X)
+        return 10_000_000 if player == PLAYER_O else -10_000_000
+    if completion_points(board, current):
+        return 9_999_999 if current == player else -9_999_999
+
+    if depth <= 0:
+        return evaluate_position(board, player, to_move=current)
+
     candidates = board.get_candidate_moves(radius=2)
-    candidates_with_scores = []
-    for x, y in candidates:
-        board.make_move(x, y, current_player)
-        score = evaluate_position(board, player)
-        board.undo_move()
-        candidates_with_scores.append(((x, y), score))
-    candidates_with_scores.sort(key=lambda x: x[1], reverse=is_maximizing)
+    ordered = _order_moves(board, current, candidates)
+    cap = 10
+
     if is_maximizing:
-        max_eval = -float('inf')
-        for (x, y), _ in candidates_with_scores[:10]:
-            board.make_move(x, y, current_player)
-            eval_score = minimax(board, depth - 1, alpha, beta, False, player)
+        best = -float('inf')
+        for (x, y), _ in ordered[:cap]:
+            board.make_move(x, y, current)
+            v = minimax(board, depth - 1, alpha, beta, False, player, budget)
             board.undo_move()
-            max_eval = max(max_eval, eval_score)
-            alpha = max(alpha, eval_score)
+            best = max(best, v)
+            alpha = max(alpha, v)
             if beta <= alpha:
                 break
-        return max_eval
+        return best
     else:
-        min_eval = float('inf')
-        for (x, y), _ in candidates_with_scores[:10]:
-            board.make_move(x, y, current_player)
-            eval_score = minimax(board, depth - 1, alpha, beta, True, player)
+        best = float('inf')
+        for (x, y), _ in ordered[:cap]:
+            board.make_move(x, y, current)
+            v = minimax(board, depth - 1, alpha, beta, True, player, budget)
             board.undo_move()
-            min_eval = min(min_eval, eval_score)
-            beta = min(beta, eval_score)
+            best = min(best, v)
+            beta = min(beta, v)
             if beta <= alpha:
                 break
-        return min_eval
+        return best
 
 
 def get_best_move(board: Board, player: int) -> Tuple[int, int]:
@@ -695,10 +770,12 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
 
     log("\n[ШАГ 9] Позиционный Minimax")
     candidates = board.get_candidate_moves(radius=2)
+    mm_budget = [8000]                      # <-- новое: бюджет узлов на этот ход
+
     scored = []
     for x, y in candidates:
         board.make_move(x, y, player)
-        score = evaluate_position(board, player)
+        score = evaluate_position(board, player, to_move=opponent)   # <-- новое: темп
         board.undo_move()
         scored.append(((x, y), score))
     scored.sort(key=lambda t: (-t[1], t[0]))
@@ -712,7 +789,8 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     for (x, y), _ in scored[:max_candidates]:
         board.make_move(x, y, player)
         score = minimax(board, depth=4, alpha=-float('inf'), beta=float('inf'),
-                        is_maximizing=False, player=player)
+                        is_maximizing=False, player=player,
+                        budget=mm_budget)                            # <-- новое: бюджет
         board.undo_move()
         log(f"  Minimax({x},{y}) = {score}")
         if score > best_score:
@@ -721,7 +799,6 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     log(f"  -> ВЫБРАН: {best_move}")
     log(f"\n=== Финальный ход: {best_move} ===")
     return best_move
-
 
 class GomokuGUI:
     def __init__(self):
