@@ -1,7 +1,9 @@
 import tkinter as tk
 from tkinter import messagebox
+from tkinter import filedialog
 from typing import Optional, List, Tuple, Dict
 import threading
+import json
 
 from gomoku_analysis import (
     analyze_threats, is_double_threat_new, is_winning_threat_set,
@@ -45,6 +47,11 @@ def log(msg: str):
 
 def player_name(p: int) -> str:
     return "X" if p == PLAYER_X else "O"
+
+
+def assign_roles(ai_starts: bool) -> Tuple[int, int]:
+    """Первым всегда играет X. Возвращает (human_player, ai_player)."""
+    return (PLAYER_O, PLAYER_X) if ai_starts else (PLAYER_X, PLAYER_O)
 
 
 class Board:
@@ -629,19 +636,15 @@ def find_own_fork(board: Board, player: int) -> Optional[Tuple[int, int]]:
 
 def find_potential_fork(board: Board, player: int) -> Optional[Tuple[int, int]]:
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
-
     for x, y in board.get_candidate_moves(radius=2):
         if not board.is_empty(x, y):
             continue
-
         board.make_move(x, y, opponent)
-        open_threes = count_all_open_threes(board, opponent, debug=True)
+        n = count_all_open_threes(board, opponent, debug=False)
         board.undo_move()
-
-        if open_threes >= 2:
-            log(f"  Потенциальная вилка противника в ({x},{y}): {open_threes} открытых троек")
+        if n >= 2:
+            log(f"  потенциальная вилка противника в ({x},{y}): {n} живых троек")
             return (x, y)
-
     return None
 
 
@@ -708,6 +711,35 @@ def find_vct_defense(board: Board, player: int, depth: int = 4,
 def block_potential_fork(board: Board, player: int) -> Optional[Tuple[int, int]]:
     fork_threat = find_potential_fork(board, player)
     return fork_threat
+
+
+def choose_resistance_move(board: Board, player: int) -> Tuple[int, int]:
+    """
+    Позиция тактически проиграна. Выбираем ход с максимумом контригры:
+    свои четвёрки (форсируют ответ) > свои живые тройки > позиционная оценка.
+    """
+    opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
+    candidates = set(generate_four_moves(board, player))
+    for m in generate_threat_moves(board, player):
+        board.make_move(m[0], m[1], player)
+        if any(t.kind == LIVE_THREE for t in analyze_threats(board, player)):
+            candidates.add(m)
+        board.undo_move()
+    if not candidates:
+        candidates = set(board.get_candidate_moves(radius=2))
+
+    best, best_score = None, -float('inf')
+    for m in sorted(candidates):
+        board.make_move(m[0], m[1], player)
+        my = analyze_threats(board, player)
+        bonus = (1000 * sum(1 for t in my if t.kind in (FOUR, LIVE_FOUR))
+                 + 100 * sum(1 for t in my if t.kind == LIVE_THREE))
+        score = evaluate_position(board, player, to_move=opponent) + bonus
+        board.undo_move()
+        if score > best_score:
+            best_score, best = score, m
+    log(f"  сопротивление: лучший {best}, оценка {best_score}")
+    return best if best else board.get_candidate_moves(radius=2)[0]
 
 
 def find_blocking_move(board: Board, threat_move: Tuple[int, int], player: int) -> Tuple[int, int]:
@@ -910,6 +942,8 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     vcf_depth = 20 if my_stones >= 4 and opp_stones >= 3 else 8
     vcf_budget = [2000]
 
+    tactically_lost = False
+
     log("\n[ШАГ 1] Мгновенный выигрыш ИИ")
     immediate_win = check_immediate_win(board, player)
     if immediate_win:
@@ -946,40 +980,52 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
             if defense:
                 log(f"  -> защита найдена: {defense}")
                 return defense
+            tactically_lost = True
             log("  ни одна защита не опровергает VCF — позиция тактически проиграна")
-            log("  проигрышный блок НЕ возвращаем, переходим к позиционной игре")
         else:
             log("  VCF противника нет")
     else:
         log("  (пропущено: камней противника < 3)")
 
-    log("\n[ШАГ 4.4] Своя вилка из живых троек")
-    fork = find_own_fork(board, player)
-    if fork:
-        log(f"  -> НАЙДЕНА: {fork}")
-        return fork
-    log("  -> не найдена")
+    if not tactically_lost:
+        log("\n[ШАГ 4.4] Своя вилка из живых троек")
+        fork = find_own_fork(board, player)
+        if fork:
+            log(f"  -> НАЙДЕНА: {fork}")
+            return fork
+        log("  -> не найдена")
 
-    log("\n[ШАГ 4.5] Свой VCT (ограниченный)")
-    if my_stones >= 3:
-        vct_move = search_vct(board, depth=4, player=player,
+        log("\n[ШАГ 4.5] Свой VCT (ограниченный)")
+        if my_stones >= 3:
+            vct_move = search_vct(board, depth=4, player=player,
                               is_attacking=True, budget=[800], tt={})
-        if vct_move:
-            log(f"  -> НАЙДЕН: {vct_move}")
-            return vct_move
-        log("  -> не найден")
-    else:
-        log("  (пропущено: своих камней < 3)")
+            if vct_move:
+                log(f"  -> НАЙДЕН: {vct_move}")
+                return vct_move
+            log("  -> не найден")
+        else:
+            log("  (пропущено: своих камней < 3)")
 
-    log("\n[ШАГ 4.6] Защита от VCT противника")
-    if opp_stones >= 3:
-        vct_defense = find_vct_defense(board, player, depth=4)
-        if vct_defense:
-            log(f"  -> защита найдена: {vct_defense}")
-            return vct_defense
-        log("  -> защита не требуется или не найдена")
-    else:
-        log("  (пропущено: камней противника < 3)")
+    if not tactically_lost and opp_stones >= 3:
+        log("\n[ШАГ 4.6] Защита от VCT противника")
+        opp_vct = search_vct(board, depth=4, player=opponent,
+                             is_attacking=True, budget=[1200], tt={})
+        if opp_vct:
+            log(f"  VCT противника начинается с {opp_vct}")
+            d = find_vct_defense(board, player, depth=4, known_threat=opp_vct)
+            if d:
+                log(f"  -> защита найдена: {d}")
+                return d
+            tactically_lost = True
+            log("  VCT не опровергается — позиция тактически проиграна")
+        else:
+            log("  VCT противника нет")
+
+    if tactically_lost:
+        log("\n[РЕЖИМ СОПРОТИВЛЕНИЯ] эвристические блокировки отключены")
+        move = choose_resistance_move(board, player)
+        log(f"\n=== Финальный ход: {move} ===")
+        return move
 
     log(f"\n[ШАГ 5] Безопасная блокировка живой тройки {player_name(opponent)}")
     block = block_open_three_threats(board, player)
@@ -1048,7 +1094,7 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
 class GomokuGUI:
     CANVAS = 660
     MIN_CELL, MAX_CELL = 8, 48
-    MAX_MOVES = 400                      # условная ничья на бесконечном поле
+    MAX_MOVES = 400
 
     def __init__(self):
         self.root = tk.Tk()
@@ -1056,44 +1102,55 @@ class GomokuGUI:
         self.root.focus_set()
 
         self.board = Board()
+        self.ai_starts = tk.BooleanVar(value=False)
+        self.human_player, self.ai_player = assign_roles(False)
         self.current = PLAYER_X
         self.game_over = False
         self.thinking = False
-        self.gen = 0                     # поколение поиска
+        self.gen = 0
         self.cell = 20
-        self.cam_x = 0.0                 # координата доски в центре окна
+        self.cam_x = 0.0
         self.cam_y = 0.0
         self.last_move = None
         self.win_line = []
         self.hover = None
-        self.game_log = []               # append-only, вся партия
+        self.game_log = []
+        self.move_records = []          # анализ по КАЖДОМУ ходу
         self.last_analysis = ""
-        self.first_player = tk.IntVar(value=PLAYER_X)
         self._pan_from = None
 
-        ctrl = tk.Frame(self.root)
-        ctrl.pack(side=tk.TOP, fill=tk.X, padx=8, pady=3)
+        top = tk.Frame(self.root)
+        top.pack(side=tk.TOP, fill=tk.X, padx=8, pady=3)
 
-        fp = tk.Frame(ctrl)
+        fp = tk.Frame(top)
         fp.pack(side=tk.LEFT)
-        tk.Label(fp, text="Первым:", font=('Arial', 10)).pack(side=tk.LEFT)
-        tk.Radiobutton(fp, text="Игрок (X)", variable=self.first_player,
-                       value=PLAYER_X, command=self.on_first_change,
+        tk.Label(fp, text="Первым ходит:", font=('Arial', 10)).pack(side=tk.LEFT)
+        tk.Radiobutton(fp, text="Игрок (X)", variable=self.ai_starts,
+                       value=False, command=self.on_first_change,
                        font=('Arial', 10)).pack(side=tk.LEFT)
-        tk.Radiobutton(fp, text="ИИ (O)", variable=self.first_player,
-                       value=PLAYER_O, command=self.on_first_change,
+        tk.Radiobutton(fp, text="ИИ (X)", variable=self.ai_starts,
+                       value=True, command=self.on_first_change,
                        font=('Arial', 10)).pack(side=tk.LEFT)
 
-        btns = tk.Frame(ctrl)
-        btns.pack(side=tk.LEFT, padx=12)
-        tk.Button(btns, text="Новая игра", command=self.new_game,
+        b1 = tk.Frame(top)
+        b1.pack(side=tk.LEFT, padx=12)
+        tk.Button(b1, text="Новая игра", command=self.new_game,
                   font=('Arial', 10)).pack(side=tk.LEFT, padx=3)
-        tk.Button(btns, text="Анализ (1)", command=self.copy_analysis,
+        tk.Button(b1, text="Центр (C)", command=self.center_last,
                   font=('Arial', 10)).pack(side=tk.LEFT, padx=3)
-        tk.Button(btns, text="Партия (2)", command=self.copy_game,
-                  font=('Arial', 10)).pack(side=tk.LEFT, padx=3)
-        tk.Button(btns, text="Центр (C)", command=self.center_last,
-                  font=('Arial', 10)).pack(side=tk.LEFT, padx=3)
+
+        b2 = tk.Frame(self.root)
+        b2.pack(side=tk.TOP, fill=tk.X, padx=8)
+        tk.Button(b2, text="Анализ хода (1)", command=self.copy_analysis,
+                  font=('Arial', 9)).pack(side=tk.LEFT, padx=2)
+        tk.Button(b2, text="Партия (2)", command=self.copy_game,
+                  font=('Arial', 9)).pack(side=tk.LEFT, padx=2)
+        tk.Button(b2, text="Все анализы (3)", command=self.copy_all_analyses,
+                  font=('Arial', 9)).pack(side=tk.LEFT, padx=2)
+        tk.Button(b2, text="Просмотр (A)", command=self.show_analyses,
+                  font=('Arial', 9)).pack(side=tk.LEFT, padx=2)
+        tk.Button(b2, text="Сохранить (S)", command=self.save_game,
+                  font=('Arial', 9)).pack(side=tk.LEFT, padx=2)
 
         self.status = tk.Label(self.root, text="Ваш ход (X)", font=('Arial', 12))
         self.status.pack(side=tk.TOP, pady=2)
@@ -1104,7 +1161,7 @@ class GomokuGUI:
 
         tk.Label(self.root,
                  text="ЛКМ — ход · ПКМ/СКМ-тяга — панорама · колесо или +/- — зум · "
-                      "стрелки — сдвиг · C — центр · 1/2 — копировать",
+                      "стрелки — сдвиг · C — центр · 1/2/3 — копировать · A — просмотр · S — сохранить",
                  font=('Arial', 8), fg='#555').pack(side=tk.TOP)
 
         self.canvas.bind('<Button-1>', self.on_click)
@@ -1117,7 +1174,7 @@ class GomokuGUI:
         self.canvas.bind('<MouseWheel>', self.on_wheel)
         self.root.bind('<Key>', self.on_key)
 
-        self.draw()
+        self.new_game()
 
     # ---------- геометрия ----------
 
@@ -1153,11 +1210,12 @@ class GomokuGUI:
         c.delete('all')
         x0, x1, y0, y1 = self.visible()
 
-        for bx in range(x0, x1 + 1):
-            px, _ = self.b2p(bx, 0)
+        # линии по границам клеток -> камни в центрах
+        for bx in range(x0, x1 + 2):
+            px, _ = self.b2p(bx - 0.5, 0)
             c.create_line(px, 0, px, self.CANVAS, fill='#C8B08A')
-        for by in range(y0, y1 + 1):
-            _, py = self.b2p(0, by)
+        for by in range(y0, y1 + 2):
+            _, py = self.b2p(0, by - 0.5)
             c.create_line(0, py, self.CANVAS, py, fill='#C8B08A')
 
         for bx in range(x0, x1 + 1):
@@ -1169,13 +1227,12 @@ class GomokuGUI:
                 _, py = self.b2p(0, by)
                 c.create_text(14, py, text=str(by), fill='#666', font=('Arial', 8))
 
-        _, o = self.b2p(0, 0)
-        ox, _ = self.b2p(0, 0)
-        c.create_line(ox - 4, o, ox + 4, o, fill='#999')
-        c.create_line(ox, o - 4, ox, o + 4, fill='#999')
+        ox, oy = self.b2p(0, 0)
+        c.create_oval(ox - 2, oy - 2, ox + 2, oy + 2, fill='#B0A080', outline='')
 
         if self.hover and not self.thinking and not self.game_over \
-                and self.current == PLAYER_X and self.board.is_empty(*self.hover):
+                and self.current == self.human_player \
+                and self.board.is_empty(*self.hover):
             px, py = self.b2p(*self.hover)
             h = self.cell / 2 - 1
             c.create_rectangle(px - h, py - h, px + h, py + h,
@@ -1199,23 +1256,23 @@ class GomokuGUI:
                                outline='#2E8B57', width=2)
 
         if self.win_line:
-            pts = [self.b2p(x, y) for x, y in self.win_line]
-            for px, py in pts:
+            for x, y in self.win_line:
+                px, py = self.b2p(x, y)
                 c.create_oval(px - r - 3, py - r - 3, px + r + 3, py + r + 3,
                               outline='#00AA00', width=3)
 
     # ---------- ввод ----------
 
     def on_click(self, event):
-        if self.thinking or self.game_over or self.current != PLAYER_X:
+        if self.thinking or self.game_over or self.current != self.human_player:
             return
         cell = self.p2b(event.x, event.y)
         if not self.board.is_empty(*cell):
             return
-        self.place(cell, PLAYER_X)
-        if self.finish_if_over(PLAYER_X):
+        self.place(cell, self.human_player)
+        if self.finish_if_over(self.human_player):
             return
-        self.current = PLAYER_O
+        self.current = self.ai_player
         self.start_ai()
 
     def on_hover(self, event):
@@ -1271,16 +1328,27 @@ class GomokuGUI:
             self.copy_analysis(); return
         elif k == '2':
             self.copy_game(); return
+        elif k == '3':
+            self.copy_all_analyses(); return
+        elif k in ('a', 'A', 'ф', 'Ф'):
+            self.show_analyses(); return
+        elif k in ('s', 'S', 'ы', 'Ы'):
+            self.save_game(); return
         else:
             return
         self.draw()
 
-    # ---------- ходы и состояние ----------
+    # ---------- ходы ----------
 
-    def place(self, cell, player):
+    def place(self, cell, player, analysis="", elapsed=None):
         self.board.make_move(cell[0], cell[1], player)
         self.last_move = cell
-        self.game_log.append(f"{len(self.game_log) + 1}. {player_name(player)} {cell}")
+        n = len(self.move_records) + 1
+        self.move_records.append({
+            "n": n, "player": player, "move": cell,
+            "analysis": analysis, "elapsed": elapsed,
+        })
+        self.game_log.append(f"{n}. {player_name(player)} {cell}")
         self.ensure_visible(*cell)
         self.draw()
 
@@ -1306,7 +1374,7 @@ class GomokuGUI:
             self.game_over = True
             self.win_line = self.find_win_line(self.board, player)
             self.draw()
-            who = "Вы выиграли!" if player == PLAYER_X else "Компьютер выиграл!"
+            who = "Вы выиграли!" if player == self.human_player else "Компьютер выиграл!"
             self.status.config(text=who)
             messagebox.showinfo("Игра окончена", who)
             return True
@@ -1326,14 +1394,15 @@ class GomokuGUI:
         self.gen += 1
         gen = self.gen
         snapshot = self.board.copy()
+        ai = self.ai_player
         self.hover = None
-        self.status.config(text="Компьютер думает...")
+        self.status.config(text=f"Компьютер ({player_name(ai)}) думает...")
         self.draw()
         t0 = time.perf_counter()
 
         def work():
             try:
-                move = get_best_move(snapshot, PLAYER_O)
+                move = get_best_move(snapshot, ai)
                 analysis = "\n".join(DEBUG_LOG)
                 err = None
             except Exception as e:
@@ -1345,58 +1414,143 @@ class GomokuGUI:
 
     def ai_done(self, gen, move, analysis, err, elapsed):
         if gen != self.gen:
-            return                        # результат устаревшей партии
+            return
         self.thinking = False
         self.last_analysis = analysis
         if err or move is None:
             self.status.config(text=f"Ошибка поиска: {err}")
-            self.current = PLAYER_X
+            self.current = self.human_player
             return
-        self.place(move, PLAYER_O)
-        if self.finish_if_over(PLAYER_O):
+        self.place(move, self.ai_player, analysis=analysis, elapsed=elapsed)
+        if self.finish_if_over(self.ai_player):
             return
-        self.current = PLAYER_X
-        self.status.config(text=f"Ваш ход (X) · ИИ думал {elapsed:.2f} с")
+        self.current = self.human_player
+        self.status.config(
+            text=f"Ваш ход ({player_name(self.human_player)}) · ИИ думал {elapsed:.2f} с")
         self.draw()
 
-    # ---------- управление партией ----------
+    # ---------- партия ----------
 
     def new_game(self):
-        self.gen += 1                     # отменяем результат текущего поиска
+        self.gen += 1
         self.thinking = False
         self.board = Board()
+        self.human_player, self.ai_player = assign_roles(self.ai_starts.get())
+        self.current = PLAYER_X
         self.game_over = False
         self.win_line = []
         self.last_move = None
         self.hover = None
         self.game_log = []
+        self.move_records = []
         self.last_analysis = ""
         self.cam_x = self.cam_y = 0.0
-        self.current = PLAYER_X
-        self.status.config(text="Ваш ход (X)")
+        self.status.config(text=f"Ваш ход ({player_name(self.human_player)})")
         self.draw()
-        if self.first_player.get() == PLAYER_O:
-            self.current = PLAYER_O
+        if self.ai_player == PLAYER_X:
             self.start_ai()
 
     def on_first_change(self):
         self.new_game()
 
-    def copy_analysis(self):
-        text = self.last_analysis or "(анализа ещё нет)"
+    # ---------- анализы ----------
+
+    def _clip(self, text, msg):
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
-        self.status.config(text=f"Анализ скопирован ({len(text)} симв.)")
+        self.status.config(text=msg)
+
+    def copy_analysis(self):
+        self._clip(self.last_analysis or "(анализа ещё нет)",
+                   f"Анализ скопирован ({len(self.last_analysis)} симв.)")
 
     def copy_game(self):
         text = "\n".join(self.game_log) or "(партия пуста)"
-        self.root.clipboard_clear()
-        self.root.clipboard_append(text)
-        self.status.config(text=f"Партия скопирована ({len(self.game_log)} ходов)")
+        self._clip(text, f"Партия скопирована ({len(self.game_log)} ходов)")
+
+    def copy_all_analyses(self):
+        parts = []
+        for r in self.move_records:
+            head = f"=== Ход {r['n']}: {player_name(r['player'])} {r['move']}"
+            if r["elapsed"] is not None:
+                head += f" ({r['elapsed']:.2f} с)"
+            parts.append(head + " ===")
+            parts.append(r["analysis"] or "(ход игрока — без анализа)")
+            parts.append("")
+        text = "\n".join(parts) or "(партия пуста)"
+        self._clip(text, f"Скопировано анализов: {len(self.move_records)} ходов")
+
+    def show_analyses(self):
+        records = [r for r in self.move_records if r["analysis"]]
+        if not records:
+            self.status.config(text="Анализов пока нет")
+            return
+        win = tk.Toplevel(self.root)
+        win.title("Анализы ходов ИИ")
+        win.geometry("980x620")
+
+        left = tk.Frame(win)
+        left.pack(side=tk.LEFT, fill=tk.Y)
+        lb = tk.Listbox(left, width=34, font=('Consolas', 10), exportselection=False)
+        sb = tk.Scrollbar(left, command=lb.yview)
+        lb.config(yscrollcommand=sb.set)
+        lb.pack(side=tk.LEFT, fill=tk.Y)
+        sb.pack(side=tk.LEFT, fill=tk.Y)
+
+        right = tk.Frame(win)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        txt = tk.Text(right, wrap=tk.NONE, font=('Consolas', 9))
+        tsb = tk.Scrollbar(right, command=txt.yview)
+        txt.config(yscrollcommand=tsb.set)
+        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tsb.pack(side=tk.LEFT, fill=tk.Y)
+
+        for r in records:
+            lb.insert(tk.END, f"{r['n']:>3}. {player_name(r['player'])} "
+                              f"{str(r['move']):<12} {r['elapsed']:.2f}s")
+
+        def on_select(_evt=None):
+            sel = lb.curselection()
+            if not sel:
+                return
+            r = records[sel[0]]
+            txt.delete('1.0', tk.END)
+            txt.insert(tk.END, r["analysis"])
+
+        lb.bind('<<ListboxSelect>>', on_select)
+        lb.selection_set(0)
+        on_select()
+
+    def save_game(self):
+        if not self.move_records:
+            self.status.config(text="Партия пуста")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Сохранить партию и анализы",
+            defaultextension=".json",
+            filetypes=[("JSON", "*.json"), ("Все файлы", "*.*")],
+            initialfile=f"gomoku_{time.strftime('%Y%m%d_%H%M%S')}.json")
+        if not path:
+            return
+        data = {
+            "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "human": player_name(self.human_player),
+            "ai": player_name(self.ai_player),
+            "ai_starts": bool(self.ai_starts.get()),
+            "moves": [
+                {"n": r["n"], "player": player_name(r["player"]),
+                 "x": r["move"][0], "y": r["move"][1],
+                 "elapsed": r["elapsed"], "analysis": r["analysis"]}
+                for r in self.move_records
+            ],
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        self.status.config(text=f"Сохранено: {path}")
+
 
     def run(self):
         self.root.mainloop()
-
 
 if __name__ == "__main__":
     app = GomokuGUI()

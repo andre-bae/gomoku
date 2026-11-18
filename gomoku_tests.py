@@ -18,7 +18,7 @@ from gomoku import (
     count_all_open_threes, get_best_move, DEBUG_LOG,
     find_vcf_defense, block_open_three_threats,
     evaluate_position, minimax, search_vct,
-    find_vct_defense,
+    find_vct_defense, choose_resistance_move, assign_roles,
 )
 
 from gomoku_analysis import (
@@ -362,6 +362,33 @@ def test_search_on_snapshot():
     get_best_move(c, PLAYER_X)
     assert b.grid == before and b.zhash == h, "исходная доска изменилась"
     assert c.grid == before and c.zhash == h, "снапшот не восстановлен"
+
+
+@case("позиция после 17 ходов: VCF у X есть, защиты нет")
+def test_lost_position_detected():
+    moves = [
+        ["X", -1, -2], ["O", -3, -2], ["X", -1, -3], ["O", -4, -2],
+        ["X", -1, -4], ["O", -1, -5], ["X", -1, -1], ["O", -1, 0],
+        ["X", 0, -3], ["O", -2, -1], ["X", -4, -3], ["O", 1, -3],
+        ["X", 0, -2], ["O", 0, 1], ["X", 1, 2], ["O", 1, -2],
+        ["X", 0, -1],
+    ]
+    b = from_moves(moves)
+    assert search_vcf(b, depth=12, player=PLAYER_X, is_attacking=True) is not None
+    assert find_vcf_defense(b, PLAYER_O, depth=12) is None
+
+
+@case("режим сопротивления возвращает допустимый ход")
+def test_resistance_move_valid():
+    b = build([(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10)])
+    m = choose_resistance_move(b, PLAYER_O)
+    assert m is not None and b.is_empty(m[0], m[1])
+
+
+@case("роли: первым всегда X")
+def test_assign_roles():
+    assert assign_roles(False) == (PLAYER_X, PLAYER_O)
+    assert assign_roles(True) == (PLAYER_O, PLAYER_X)
 
 
 # ---------- раннер и утилиты ----------
