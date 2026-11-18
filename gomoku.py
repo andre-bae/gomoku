@@ -9,6 +9,24 @@ from gomoku_analysis import (
     FIVE, LIVE_FOUR, FOUR, LIVE_THREE, SLEEPING_THREE,
 )
 
+import time
+
+MASK64 = (1 << 64) - 1
+POSITIONAL_TIME_LIMIT = 2.0   # секунд на позиционную фазу хода
+TT_MAX_ENTRIES = 200_000
+
+TT_EXACT, TT_LOWER, TT_UPPER = 0, 1, 2
+
+
+def _zobrist_key(x: int, y: int, player: int) -> int:
+    """Детерминированный 64-битный ключ клетки без состояния RNG."""
+    h = ((x * 0x9E3779B97F4A7C15) ^ (y * 0xBF58476D1CE4E5B9) ^
+         (player * 0x94D049BB133111EB)) & MASK64
+    h = ((h ^ (h >> 30)) * 0xBF58476D1CE4E5B9) & MASK64
+    h = ((h ^ (h >> 27)) * 0x94D049BB133111EB) & MASK64
+    return (h ^ (h >> 31)) & MASK64
+
+
 # Константы
 EMPTY = 0
 PLAYER_X = 1
@@ -33,12 +51,14 @@ class Board:
     def __init__(self):
         self.grid: Dict[Tuple[int, int], int] = {}
         self.move_history: List[Tuple[int, int, int]] = []
+        self.zhash: int = 0
 
     def make_move(self, x: int, y: int, player: int) -> bool:
         if (x, y) in self.grid:
             return False
         self.grid[(x, y)] = player
         self.move_history.append((x, y, player))
+        self.zhash ^= _zobrist_key(x, y, player)
         return True
 
     def undo_move(self) -> Optional[Tuple[int, int, int]]:
@@ -46,6 +66,7 @@ class Board:
             return None
         x, y, player = self.move_history.pop()
         del self.grid[(x, y)]
+        self.zhash ^= _zobrist_key(x, y, player)
         return (x, y, player)
 
     def get_cell(self, x: int, y: int) -> int:
@@ -638,7 +659,7 @@ def _order_moves(board: Board, side: int, candidates) -> List[Tuple[Tuple[int, i
 
 
 def minimax(board: Board, depth: int, alpha: int, beta: int,
-            is_maximizing: bool, player: int, budget=None) -> int:
+            is_maximizing: bool, player: int, budget=None, tt=None) -> int:
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
     current = player if is_maximizing else opponent
 
@@ -647,7 +668,6 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
             return evaluate_position(board, player, to_move=current)
         budget[0] -= 1
 
-    # терминал проверяется ДО отсечения по глубине
     if check_five(board, PLAYER_X):
         return 10_000_000 if player == PLAYER_X else -10_000_000
     if check_five(board, PLAYER_O):
@@ -658,6 +678,22 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
     if depth <= 0:
         return evaluate_position(board, player, to_move=current)
 
+    orig_alpha, orig_beta = alpha, beta
+    key = None
+    if tt is not None:
+        key = (board.zhash, depth, is_maximizing, player)
+        entry = tt.get(key)
+        if entry is not None:
+            val, flag = entry
+            if flag == TT_EXACT:
+                return val
+            if flag == TT_LOWER:
+                alpha = max(alpha, val)
+            elif flag == TT_UPPER:
+                beta = min(beta, val)
+            if alpha >= beta:
+                return val
+
     candidates = board.get_candidate_moves(radius=2)
     ordered = _order_moves(board, current, candidates)
     cap = 10
@@ -666,25 +702,33 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
         best = -float('inf')
         for (x, y), _ in ordered[:cap]:
             board.make_move(x, y, current)
-            v = minimax(board, depth - 1, alpha, beta, False, player, budget)
+            v = minimax(board, depth - 1, alpha, beta, False, player, budget, tt)
             board.undo_move()
             best = max(best, v)
             alpha = max(alpha, v)
             if beta <= alpha:
                 break
-        return best
     else:
         best = float('inf')
         for (x, y), _ in ordered[:cap]:
             board.make_move(x, y, current)
-            v = minimax(board, depth - 1, alpha, beta, True, player, budget)
+            v = minimax(board, depth - 1, alpha, beta, True, player, budget, tt)
             board.undo_move()
             best = min(best, v)
             beta = min(beta, v)
             if beta <= alpha:
                 break
-        return best
 
+    if tt is not None and key is not None and len(tt) < TT_MAX_ENTRIES:
+        if best <= orig_alpha:
+            flag = TT_UPPER
+        elif best >= orig_beta:
+            flag = TT_LOWER
+        else:
+            flag = TT_EXACT
+        tt[key] = (best, flag)
+
+    return best
 
 def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     DEBUG_LOG.clear()
@@ -768,14 +812,16 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
 
     log("\n[ШАГ 7-8] VCT временно отключён (этап 6)")
 
-    log("\n[ШАГ 9] Позиционный Minimax")
+    log("\n[ШАГ 9] Позиционный поиск (iterative deepening)")
     candidates = board.get_candidate_moves(radius=2)
-    mm_budget = [8000]                      # <-- новое: бюджет узлов на этот ход
+    mm_budget = [8000]
+    tt = {}
+    deadline = time.perf_counter() + POSITIONAL_TIME_LIMIT
 
     scored = []
     for x, y in candidates:
         board.make_move(x, y, player)
-        score = evaluate_position(board, player, to_move=opponent)   # <-- новое: темп
+        score = evaluate_position(board, player, to_move=opponent)
         board.undo_move()
         scored.append(((x, y), score))
     scored.sort(key=lambda t: (-t[1], t[0]))
@@ -783,19 +829,33 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     for (x, y), s in scored[:10]:
         log(f"    ({x},{y}) = {s}")
 
-    best_score = -float('inf')
-    best_move = scored[0][0]
     max_candidates = 7 if len(board.move_history) < 6 else 15
-    for (x, y), _ in scored[:max_candidates]:
-        board.make_move(x, y, player)
-        score = minimax(board, depth=4, alpha=-float('inf'), beta=float('inf'),
-                        is_maximizing=False, player=player,
-                        budget=mm_budget)                            # <-- новое: бюджет
-        board.undo_move()
-        log(f"  Minimax({x},{y}) = {score}")
-        if score > best_score:
-            best_score = score
-            best_move = (x, y)
+    root_moves = [m for m, _ in scored[:max_candidates]]
+    best_move = root_moves[0]
+
+    for depth in range(1, 5):
+        best_score = -float('inf')
+        local_best = None
+        for (x, y) in root_moves:
+            if time.perf_counter() > deadline or mm_budget[0] <= 0:
+                break
+            board.make_move(x, y, player)
+            score = minimax(board, depth - 1, -float('inf'), float('inf'),
+                            False, player, mm_budget, tt)
+            board.undo_move()
+            log(f"  d={depth} ({x},{y}) = {score}")
+            if score > best_score:
+                best_score = score
+                local_best = (x, y)
+        if local_best is not None:
+            best_move = local_best
+            root_moves.remove(local_best)
+            root_moves.insert(0, local_best)
+            log(f"  глубина {depth}: лучший {local_best}, оценка {best_score}")
+        if time.perf_counter() > deadline or mm_budget[0] <= 0:
+            log("  бюджет исчерпан — углубление остановлено")
+            break
+
     log(f"  -> ВЫБРАН: {best_move}")
     log(f"\n=== Финальный ход: {best_move} ===")
     return best_move

@@ -16,7 +16,7 @@ from gomoku import (
     check_double_threat, search_vcf, check_immediate_win,
     find_all_open_three_blocks, get_potential_threats,
     count_all_open_threes, get_best_move, DEBUG_LOG,
-    find_vcf_defense, block_open_three_threats, evaluate_position,
+    find_vcf_defense, block_open_three_threats, evaluate_position, minimax,
 )
 
 
@@ -235,6 +235,31 @@ def test_eval_symmetry():
     for t in (PLAYER_X, PLAYER_O):
         assert evaluate_position(b, PLAYER_X, to_move=t) == \
                -evaluate_position(b, PLAYER_O, to_move=t)
+
+
+@case("Zobrist: make/undo восстанавливает хеш")
+def test_zobrist_make_undo():
+    b = build([(0, 0), (1, 0)], [(0, 1)])
+    h0 = b.zhash
+    b.make_move(5, 5, PLAYER_X)
+    assert b.zhash != h0
+    b.undo_move()
+    assert b.zhash == h0
+
+
+@case("Zobrist: разные позиции — разные хеши")
+def test_zobrist_distinct():
+    assert build([(0, 0)], []).zhash != build([(1, 0)], []).zhash
+
+
+@case("TT не меняет результат minimax")
+def test_tt_same_result():
+    b = build([(0, 0), (1, 0)], [(0, 1)])
+    v1 = minimax(b, depth=2, alpha=-10**9, beta=10**9, is_maximizing=True,
+                 player=PLAYER_X, budget=[100000], tt=None)
+    v2 = minimax(b, depth=2, alpha=-10**9, beta=10**9, is_maximizing=True,
+                 player=PLAYER_X, budget=[100000], tt={})
+    assert v1 == v2, f"без TT {v1}, с TT {v2}"
 
 
 # ---------- раннер и утилиты ----------
