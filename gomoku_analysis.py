@@ -338,3 +338,27 @@ def threat_move_candidates(board, player: int):
                 for i in empties:
                     res.add(sc[i])
     return res
+
+
+def window_potential(board, player: int) -> int:
+    """
+    Взвешенный потенциал: окна из 5 клеток без камней противника.
+    Зажатая с обоих концов линия не даёт вклада — все её окна невалидны.
+    """
+    opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
+    W = {1: 1, 2: 12, 3: 60}
+    total = 0
+    for (didx, inv), ts in _collect_lines(board, player).items():
+        lo, hi = min(ts) - MARGIN, max(ts) + MARGIN
+        coords = [_coord(didx, t, inv) for t in range(lo, hi + 1)]
+        vals = [board.get_cell(x, y) for (x, y) in coords]
+        for a, b in _split_opponent(vals, opponent):
+            sv = vals[a:b]
+            n = len(sv)
+            for s in range(n - WIN_LEN + 1):
+                k = 0
+                for i in range(s, s + WIN_LEN):
+                    if sv[i] == player:
+                        k += 1
+                total += W.get(k, 0)
+    return total

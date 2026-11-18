@@ -23,6 +23,7 @@ from gomoku import (
 
 from gomoku_analysis import (
     analyze_threats, is_double_threat_new, LIVE_THREE, LIVE_FOUR,
+    window_potential,
 )
 
 
@@ -389,6 +390,21 @@ def test_resistance_move_valid():
 def test_assign_roles():
     assert assign_roles(False) == (PLAYER_X, PLAYER_O)
     assert assign_roles(True) == (PLAYER_O, PLAYER_X)
+
+
+@case("потенциал: зажатая линия теряет вклад")
+def test_potential_capped_line():
+    opened = build([(0, 0), (1, 0), (2, 0)], [])
+    capped = build([(0, 0), (1, 0), (2, 0)], [(-1, 0), (3, 0)])
+    assert window_potential(opened, PLAYER_X) > window_potential(capped, PLAYER_X)
+
+
+@case("оценка штрафует потенциал противника")
+def test_eval_penalizes_opponent_potential():
+    b1 = build([(0, 0), (1, 0)], [])
+    b2 = build([(0, 0), (1, 0)], [(5, 5), (6, 5)])
+    assert evaluate_position(b1, PLAYER_X, to_move=PLAYER_X) > \
+           evaluate_position(b2, PLAYER_X, to_move=PLAYER_X)
 
 
 # ---------- раннер и утилиты ----------

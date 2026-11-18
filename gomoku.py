@@ -8,7 +8,7 @@ import json
 from gomoku_analysis import (
     analyze_threats, is_double_threat_new, is_winning_threat_set,
     completion_points, four_move_candidates, threat_move_candidates, describe,
-    FIVE, LIVE_FOUR, FOUR, LIVE_THREE, SLEEPING_THREE,
+    FIVE, LIVE_FOUR, FOUR, LIVE_THREE, SLEEPING_THREE, window_potential,
 )
 
 import time
@@ -810,6 +810,16 @@ def evaluate_position(board: Board, player: int, to_move: Optional[int] = None) 
             score -= TEMPO.get(t.kind, 0)
 
     score += 25 * (_connectivity(board, player) - _connectivity(board, opponent))
+    # Вес потенциала зависит от темпа, а не от роли "я/противник" —
+    # правило одинаково для обеих сторон, поэтому антисимметрия сохраняется.
+    # Сторона НЕ в ходу опаснее: её потенциал ещё не реализован, значит
+    # мешать её построению важнее, чем достраивать своё.
+    pot_me = window_potential(board, player)
+    pot_op = window_potential(board, opponent)
+    w_move, w_wait = 1.0, 1.25
+    w_me = w_move if to_move == player else w_wait
+    w_op = w_move if to_move == opponent else w_wait
+    score += int(pot_me * w_me) - int(pot_op * w_op)
     return score
 
 
