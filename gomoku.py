@@ -637,6 +637,66 @@ def find_potential_fork(board: Board, player: int) -> Optional[Tuple[int, int]]:
     return None
 
 
+def find_vct_defense(board: Board, player: int, depth: int = 4,
+                     known_threat: Optional[Tuple[int, int]] = None,
+                     max_candidates: int = 10) -> Optional[Tuple[int, int]]:
+    """
+    Этап 6. Ход, после которого у противника НЕ остаётся VCT.
+    Кандидаты prioritized, каждый проверяется повторным поиском.
+    Бюджет консервативный: при исчерпании считаем, что выигрыш не найден.
+    """
+    opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
+
+    threat = known_threat
+    if threat is None:
+        threat = search_vct(board, depth=depth, player=opponent,
+                            is_attacking=True, budget=[1500], tt={})
+    if threat is None:
+        log("    VCT противника нет")
+        return None
+    log(f"    VCT противника начинается с {threat}")
+
+    ordered = [threat]
+    ordered += sorted(completion_points(board, opponent))
+    live_pts = set()
+    for t in analyze_threats(board, opponent):
+        if t.kind == LIVE_THREE:
+            live_pts.update(t.points)
+    ordered += sorted(live_pts)
+    ordered += generate_four_moves(board, player)          # наши контр-четвёрки
+    ordered += sorted(threat_move_candidates(board, opponent))
+
+    seen = set()
+    candidates = []
+    for m in ordered:
+        if m in seen:
+            continue
+        seen.add(m)
+        if board.is_empty(m[0], m[1]):
+            candidates.append(m)
+        if len(candidates) >= max_candidates:
+            break
+
+    verified = []
+    for move in candidates:
+        board.make_move(move[0], move[1], player)
+        still = search_vct(board, depth=depth, player=opponent,
+                           is_attacking=True, budget=[1500], tt={})
+        if still is None:
+            score = evaluate_position(board, player, to_move=opponent)
+            verified.append((score, move))
+            log(f"    защита {move} опровергает VCT (оценка {score})")
+        else:
+            log(f"    защита {move} не помогает: VCT {still}")
+        board.undo_move()
+
+    if not verified:
+        log("    ни одна защита не опровергает VCT")
+        return None
+    verified.sort(key=lambda t: (-t[0], t[1]))
+    return verified[0][1]
+
+
 def block_potential_fork(board: Board, player: int) -> Optional[Tuple[int, int]]:
     fork_threat = find_potential_fork(board, player)
     return fork_threat
@@ -902,6 +962,16 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
         log("  -> не найден")
     else:
         log("  (пропущено: своих камней < 3)")
+
+    log("\n[ШАГ 4.6] Защита от VCT противника")
+    if opp_stones >= 3:
+        vct_defense = find_vct_defense(board, player, depth=4)
+        if vct_defense:
+            log(f"  -> защита найдена: {vct_defense}")
+            return vct_defense
+        log("  -> защита не требуется или не найдена")
+    else:
+        log("  (пропущено: камней противника < 3)")
 
     log(f"\n[ШАГ 5] Безопасная блокировка живой тройки {player_name(opponent)}")
     block = block_open_three_threats(board, player)

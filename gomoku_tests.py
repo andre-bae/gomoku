@@ -16,8 +16,9 @@ from gomoku import (
     check_double_threat, search_vcf, check_immediate_win,
     find_all_open_three_blocks, get_potential_threats,
     count_all_open_threes, get_best_move, DEBUG_LOG,
-    find_vcf_defense, block_open_three_threats, evaluate_position,
-    minimax, search_vct,
+    find_vcf_defense, block_open_three_threats,
+    evaluate_position, minimax, search_vct,
+    find_vct_defense,
 )
 
 from gomoku_analysis import (
@@ -319,6 +320,28 @@ def test_vct_fails_when_defender_wins():
     m = search_vct(b, depth=4, player=PLAYER_X, is_attacking=True,
                    budget=[2000], tt={})
     assert m is None, f"противник выигрывает первым, VCT быть не должно: {m}"
+
+
+@case("защита от VCT находится (контр-четвёрка или блок вилки)")
+def test_vct_defense_found():
+    # у X вилка 3-3 в (0,0); у O есть спящая тройка для контр-четвёрки
+    b = build([(1, 0), (2, 0), (0, 1), (0, 2), (4, 5)],
+              [(5, 5), (6, 5), (7, 5)])
+    assert search_vct(b, depth=4, player=PLAYER_X, is_attacking=True,
+                      budget=[2000], tt={}) is not None
+    d = find_vct_defense(b, PLAYER_O, depth=4)
+    assert d is not None, "защита должна существовать"
+    b.make_move(d[0], d[1], PLAYER_O)
+    assert search_vct(b, depth=4, player=PLAYER_X, is_attacking=True,
+                      budget=[2000], tt={}) is None, "защита должна опровергать VCT"
+
+
+@case("защита от VCT не нужна, когда VCT нет")
+def test_vct_defense_not_needed():
+    b = build([(1, 0), (2, 0)], [(10, 10)])
+    assert search_vct(b, depth=4, player=PLAYER_X, is_attacking=True,
+                      budget=[2000], tt={}) is None
+    assert find_vct_defense(b, PLAYER_O, depth=4) is None
 
 
 # ---------- раннер и утилиты ----------
