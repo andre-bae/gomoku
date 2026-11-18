@@ -16,7 +16,12 @@ from gomoku import (
     check_double_threat, search_vcf, check_immediate_win,
     find_all_open_three_blocks, get_potential_threats,
     count_all_open_threes, get_best_move, DEBUG_LOG,
-    find_vcf_defense, block_open_three_threats, evaluate_position, minimax,
+    find_vcf_defense, block_open_three_threats, evaluate_position,
+    minimax, search_vct,
+)
+
+from gomoku_analysis import (
+    analyze_threats, is_double_threat_new, LIVE_THREE, LIVE_FOUR,
 )
 
 
@@ -260,6 +265,60 @@ def test_tt_same_result():
     v2 = minimax(b, depth=2, alpha=-10**9, beta=10**9, is_maximizing=True,
                  player=PLAYER_X, budget=[100000], tt={})
     assert v1 == v2, f"без TT {v1}, с TT {v2}"
+
+
+@case("VCT находит выигрыш, которого не видит VCF")
+def test_vct_finds_win_vcf_misses():
+    b = build([(1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10)])
+    assert search_vcf(b, depth=6, player=PLAYER_X, is_attacking=True) is None
+    m = search_vct(b, depth=4, player=PLAYER_X, is_attacking=True,
+                   budget=[2000], tt={})
+    # выигрывающих первых ходов несколько — конкретную клетку не фиксируем
+    assert m is not None, "VCT должен найти форсированный выигрыш"
+
+
+@case("вилка 3-3 в (0,0) распознаётся анализатором")
+def test_fork_at_origin():
+    b = build([(1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10)])
+    b.make_move(0, 0, PLAYER_X)
+    assert is_double_threat_new(b, PLAYER_X) is True
+
+
+@case("линия VCT: (-2,3) -> O(-1,2) -> X(0,0) — вилка")
+def test_vct_concrete_line():
+    b = build([(1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10)])
+
+    b.make_move(-2, 3, PLAYER_X)
+    live = [t for t in analyze_threats(b, PLAYER_X) if t.kind == LIVE_THREE]
+    assert len(live) == 1, "должна быть ровно одна живая тройка"
+    assert live[0].points == ((-1, 2),), f"ключевая точка одна: {live[0].points}"
+
+    # если O не парирует — X делает живую четвёрку
+    b.make_move(-1, 2, PLAYER_X)
+    assert any(t.kind == LIVE_FOUR for t in analyze_threats(b, PLAYER_X))
+    b.undo_move()
+
+    # O парирует, но вилка всё равно возникает
+    b.make_move(-1, 2, PLAYER_O)
+    b.make_move(0, 0, PLAYER_X)
+    assert is_double_threat_new(b, PLAYER_X) is True
+
+
+@case("VCT не выдумывает победу, если тройку можно парировать")
+def test_vct_no_false_win():
+    b = build([(1, 0), (2, 0)], [(10, 10)])
+    m = search_vct(b, depth=4, player=PLAYER_X, is_attacking=True,
+                   budget=[2000], tt={})
+    assert m is None, f"ложная победа: {m}"
+
+
+@case("VCT проваливается, если противник собирает пятёрку первым")
+def test_vct_fails_when_defender_wins():
+    b = build([(1, 0), (2, 0), (0, 1), (0, 2)],
+              [(5, 5), (6, 5), (7, 5), (8, 5)])
+    m = search_vct(b, depth=4, player=PLAYER_X, is_attacking=True,
+                   budget=[2000], tt={})
+    assert m is None, f"противник выигрывает первым, VCT быть не должно: {m}"
 
 
 # ---------- раннер и утилиты ----------

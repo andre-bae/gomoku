@@ -303,3 +303,38 @@ def four_move_candidates(board, player: int):
                 for i in empties:
                     res.add(sc[i])
     return res
+
+
+def threat_move_candidates(board, player: int):
+    """
+    Клетки, ход в которые создаёт четвёрку или тройку.
+    Надмножество four_move_candidates: окна с >=2 своими камнями.
+    Живая тройка или нет — проверяется уже после хода в search_vct.
+    """
+    opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
+    res = set()
+    for (didx, inv), ts in _collect_lines(board, player).items():
+        lo, hi = min(ts) - MARGIN, max(ts) + MARGIN
+        coords = [_coord(didx, t, inv) for t in range(lo, hi + 1)]
+        vals = [board.get_cell(x, y) for (x, y) in coords]
+        for a, b in _split_opponent(vals, opponent):
+            sv, sc = vals[a:b], coords[a:b]
+            n = len(sv)
+            for s in range(n - WIN_LEN + 1):
+                stones = 0
+                empties = []
+                bad = False
+                for i in range(s, s + WIN_LEN):
+                    v = sv[i]
+                    if v == opponent:
+                        bad = True
+                        break
+                    if v == player:
+                        stones += 1
+                    else:
+                        empties.append(i)
+                if bad or stones < 2:
+                    continue
+                for i in empties:
+                    res.add(sc[i])
+    return res

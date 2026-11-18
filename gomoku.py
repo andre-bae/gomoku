@@ -5,7 +5,7 @@ import threading
 
 from gomoku_analysis import (
     analyze_threats, is_double_threat_new, is_winning_threat_set,
-    completion_points, four_move_candidates, describe,
+    completion_points, four_move_candidates, threat_move_candidates, describe,
     FIVE, LIVE_FOUR, FOUR, LIVE_THREE, SLEEPING_THREE,
 )
 
@@ -227,14 +227,8 @@ def generate_four_moves(board: Board, player: int) -> List[Tuple[int, int]]:
 
 
 def generate_threat_moves(board: Board, player: int) -> List[Tuple[int, int]]:
-    moves = []
-    for x, y in board.get_candidate_moves(radius=2):
-        threats = get_potential_threats(board, x, y, player)
-        if ('open_four' in threats or 'closed_four' in threats or
-                'open_three' in threats or 'five' in threats):
-            moves.append((x, y))
-    return moves
-
+    """Этап 6: точный набор ходов-угроз через окна анализатора."""
+    return sorted(threat_move_candidates(board, player))
 
 def count_all_open_threes(board: Board, player: int, debug: bool = False) -> int:
     """Этап 2: считаем только ЖИВЫЕ тройки (способные стать живой четвёркой)."""
@@ -331,13 +325,111 @@ def search_vcf(board: Board, depth: int, player: int, is_attacking: bool,
 
     return None
 
-def search_vct(board: Board, depth: int, player: int, is_attacking: bool) -> Optional[Tuple[int, int]]:
+def search_vct(board: Board, depth: int, player: int, is_attacking: bool,
+               path=None, indent: int = 0, budget=None, tt=None) -> Optional[Tuple[int, int]]:
     """
-    ВРЕМЕННО (этап 6): старая логика VCT некорректна — после хода-тройки
-    у защитника десятки легальных ответов, а не только его четвёрки.
-    Отключено, чтобы не выдавать фиктивные выигрыши.
+    Этап 6. Форсированный выигрыш непрерывными угрозами (четвёрки + живые тройки).
+    Парирования защитника: точки достройки четвёрок, ключевые точки живых троек,
+    контр-четвёрки (только когда у атакующего нет четвёрки).
+    Выигрыш — только если проигрывают ВСЕ парирования. Бюджет — консервативный.
     """
-    return None
+    if path is None:
+        path = []
+    if budget is not None:
+        if budget[0] <= 0:
+            return None
+        budget[0] -= 1
+
+    attacker = player if is_attacking else (PLAYER_O if player == PLAYER_X else PLAYER_X)
+    defender = PLAYER_O if attacker == PLAYER_X else PLAYER_X
+    ind = "  " * indent
+
+    if completion_points(board, defender):
+        return None
+    win_now = completion_points(board, attacker)
+    if win_now:
+        m = sorted(win_now)[0]
+        log(f"{ind}VCT: пятёрка {m} | путь: {' -> '.join(path + [f'{player_name(attacker)}{m}'])}")
+        return m
+    if depth <= 0:
+        return None
+
+    key = None
+    if tt is not None:
+        key = (board.zhash, depth, attacker, 'vct')
+        if key in tt:
+            return tt[key]
+
+    moves = generate_threat_moves(board, attacker)
+    if not moves:
+        return None
+    log(f"{ind}VCT d={depth} {player_name(attacker)}: {len(moves)} ходов-угроз")
+
+    result = None
+    for move in moves:
+        if budget is not None and budget[0] <= 0:
+            break
+        board.make_move(move[0], move[1], attacker)
+        tag = f"{player_name(attacker)}{move}"
+
+        if check_five(board, attacker):
+            log(f"{ind}VCT: пятёрка {move} | путь: {' -> '.join(path + [tag])}")
+            result = move
+            board.undo_move()
+            break
+
+        if completion_points(board, defender):
+            board.undo_move()
+            continue
+
+        threats = analyze_threats(board, attacker)
+        has_four = any(t.kind in (FOUR, LIVE_FOUR) for t in threats)
+        live3 = [t for t in threats if t.kind == LIVE_THREE]
+        if not has_four and not live3:
+            board.undo_move()
+            continue                      # не форсирующая угроза
+
+        if is_double_threat_new(board, attacker):
+            log(f"{ind}VCT: неустранимая угроза после {move}")
+            log(f"{ind}  путь: {' -> '.join(path + [tag])}")
+            log(f"{ind}  угрозы: {describe(threats)}")
+            result = move
+            board.undo_move()
+            break
+
+        if has_four:
+            parries = {p for t in threats if t.kind in (FOUR, LIVE_FOUR) for p in t.points}
+        else:
+            parries = {p for t in live3 for p in t.points}
+            parries |= four_move_candidates(board, defender)   # контр-четвёрки
+
+        if not parries:
+            board.undo_move()
+            continue
+
+        all_parries_lose = True
+        for d in sorted(parries):
+            if budget is not None and budget[0] <= 0:
+                all_parries_lose = False
+                break
+            board.make_move(d[0], d[1], defender)
+            res = search_vct(board, depth - 2, player, is_attacking,
+                             path + [tag, f"{player_name(defender)}{d}"],
+                             indent + 1, budget, tt)
+            board.undo_move()
+            if res is None:
+                all_parries_lose = False
+                break
+
+        board.undo_move()
+        if all_parries_lose:
+            result = move
+            break
+
+    if tt is not None and key is not None:
+        tt[key] = result
+    return result
+
 
 def debug_dump_all_threes(board: Board, player: int):
     log(f"  --- Все тройки {player_name(player)} ---")
@@ -510,15 +602,19 @@ def block_open_three_threats(board: Board, player: int) -> Optional[Tuple[int, i
     safe.sort(key=lambda x: (-x[0], x[1]))
     return safe[0][1]
 
+
 def find_own_fork(board: Board, player: int) -> Optional[Tuple[int, int]]:
-    for x, y in board.get_candidate_moves(radius=2):
-        if not board.is_empty(x, y):
-            continue
+    """Этап 6: вилка проверяется анализатором, с учётом темпа противника."""
+    opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
+    if completion_points(board, opponent):
+        return None                      # противник собирает пятёрку первым
+    for (x, y) in generate_threat_moves(board, player):
         board.make_move(x, y, player)
-        open_threes = count_all_open_threes(board, player)
+        ok = (is_double_threat_new(board, player)
+              and not completion_points(board, opponent))
         board.undo_move()
-        if open_threes >= 2:
-            log(f"  Вилка найдена в ({x},{y}): {open_threes} открытых троек")
+        if ok:
+            log(f"  вилка найдена в ({x},{y})")
             return (x, y)
     return None
 
@@ -789,19 +885,30 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     else:
         log("  (пропущено: камней противника < 3)")
 
+    log("\n[ШАГ 4.4] Своя вилка из живых троек")
+    fork = find_own_fork(board, player)
+    if fork:
+        log(f"  -> НАЙДЕНА: {fork}")
+        return fork
+    log("  -> не найдена")
+
+    log("\n[ШАГ 4.5] Свой VCT (ограниченный)")
+    if my_stones >= 3:
+        vct_move = search_vct(board, depth=4, player=player,
+                              is_attacking=True, budget=[800], tt={})
+        if vct_move:
+            log(f"  -> НАЙДЕН: {vct_move}")
+            return vct_move
+        log("  -> не найден")
+    else:
+        log("  (пропущено: своих камней < 3)")
+
     log(f"\n[ШАГ 5] Безопасная блокировка живой тройки {player_name(opponent)}")
     block = block_open_three_threats(board, player)
     if block:
         log(f"  -> ВЫБРАНА: {block}")
         return block
     log("  -> не выбрана")
-
-    log("\n[ШАГ 6] Своя вилка из живых троек")
-    fork = find_own_fork(board, player)
-    if fork:
-        log(f"  -> НАЙДЕНА: {fork}")
-        return fork
-    log("  -> не найдена")
 
     log(f"\n[ШАГ 6.5] Блокировка потенциальной вилки {player_name(opponent)}")
     fork_block = block_potential_fork(board, player)
