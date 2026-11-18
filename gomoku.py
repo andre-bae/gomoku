@@ -90,6 +90,14 @@ class Board:
     def count_stones(self, player: int) -> int:
         return sum(1 for _, _, p in self.move_history if p == player)
 
+    def copy(self) -> "Board":
+        """Снапшот для фонового поиска — не разделяется с GUI."""
+        b = Board()
+        b.grid = dict(self.grid)
+        b.move_history = list(self.move_history)
+        b.zhash = self.zhash
+        return b
+
 
 def check_five(board: Board, player: int) -> bool:
     directions = [(1, 0), (0, 1), (1, 1), (1, -1)]
@@ -1038,216 +1046,353 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     return best_move
 
 class GomokuGUI:
+    CANVAS = 660
+    MIN_CELL, MAX_CELL = 8, 48
+    MAX_MOVES = 400                      # условная ничья на бесконечном поле
+
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Гомоку - 5 в ряд (30x30) [DEBUG: клавиша 1]")
+        self.root.title("Гомоку — бесконечное поле")
         self.root.focus_set()
 
         self.board = Board()
-        self.current_player = PLAYER_X
-        self.cell_size = 20
-        self.board_size = 30
-        self.offset = 30
-        self.is_computer_thinking = False
-        self.hover_cell: Optional[Tuple[int, int]] = None
+        self.current = PLAYER_X
+        self.game_over = False
+        self.thinking = False
+        self.gen = 0                     # поколение поиска
+        self.cell = 20
+        self.cam_x = 0.0                 # координата доски в центре окна
+        self.cam_y = 0.0
+        self.last_move = None
+        self.win_line = []
+        self.hover = None
+        self.game_log = []               # append-only, вся партия
+        self.last_analysis = ""
         self.first_player = tk.IntVar(value=PLAYER_X)
+        self._pan_from = None
 
-        ctrl_frame = tk.Frame(self.root)
-        ctrl_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=3)
+        ctrl = tk.Frame(self.root)
+        ctrl.pack(side=tk.TOP, fill=tk.X, padx=8, pady=3)
 
-        first_frame = tk.Frame(ctrl_frame)
-        first_frame.pack(side=tk.LEFT, padx=10)
-        tk.Label(first_frame, text="Первым ходит:", font=('Arial', 10)).pack(side=tk.LEFT, padx=5)
-        tk.Radiobutton(first_frame, text="Игрок (X)", variable=self.first_player,
-                       value=PLAYER_X, command=self.on_first_player_change, font=('Arial', 10)).pack(side=tk.LEFT)
-        tk.Radiobutton(first_frame, text="Компьютер (O)", variable=self.first_player,
-                       value=PLAYER_O, command=self.on_first_player_change, font=('Arial', 10)).pack(side=tk.LEFT)
+        fp = tk.Frame(ctrl)
+        fp.pack(side=tk.LEFT)
+        tk.Label(fp, text="Первым:", font=('Arial', 10)).pack(side=tk.LEFT)
+        tk.Radiobutton(fp, text="Игрок (X)", variable=self.first_player,
+                       value=PLAYER_X, command=self.on_first_change,
+                       font=('Arial', 10)).pack(side=tk.LEFT)
+        tk.Radiobutton(fp, text="ИИ (O)", variable=self.first_player,
+                       value=PLAYER_O, command=self.on_first_change,
+                       font=('Arial', 10)).pack(side=tk.LEFT)
 
-        btn_frame = tk.Frame(ctrl_frame)
-        btn_frame.pack(side=tk.LEFT, padx=20)
-        tk.Button(btn_frame, text='Начать новую игру', command=self.restart_game,
-                  font=('Arial', 10)).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text='Скопировать отладку (1)',
-                  command=self.copy_debug_to_clipboard, font=('Arial', 10)).pack(side=tk.LEFT, padx=5)
+        btns = tk.Frame(ctrl)
+        btns.pack(side=tk.LEFT, padx=12)
+        tk.Button(btns, text="Новая игра", command=self.new_game,
+                  font=('Arial', 10)).pack(side=tk.LEFT, padx=3)
+        tk.Button(btns, text="Анализ (1)", command=self.copy_analysis,
+                  font=('Arial', 10)).pack(side=tk.LEFT, padx=3)
+        tk.Button(btns, text="Партия (2)", command=self.copy_game,
+                  font=('Arial', 10)).pack(side=tk.LEFT, padx=3)
+        tk.Button(btns, text="Центр (C)", command=self.center_last,
+                  font=('Arial', 10)).pack(side=tk.LEFT, padx=3)
 
-        self.status_label = tk.Label(self.root, text='Ваш ход (X) — [1] скопировать отладку',
-                                     font=('Arial', 12))
-        self.status_label.pack(side=tk.TOP, pady=3)
+        self.status = tk.Label(self.root, text="Ваш ход (X)", font=('Arial', 12))
+        self.status.pack(side=tk.TOP, pady=2)
 
-        canvas_size = self.board_size * self.cell_size + 2 * self.offset
-        self.canvas = tk.Canvas(self.root, width=canvas_size, height=canvas_size, bg='#F5DEB3')
-        self.canvas.pack(side=tk.TOP, padx=10, pady=5)
+        self.canvas = tk.Canvas(self.root, width=self.CANVAS, height=self.CANVAS,
+                                bg='#F5DEB3', highlightthickness=0)
+        self.canvas.pack(side=tk.TOP, padx=8, pady=4)
+
+        tk.Label(self.root,
+                 text="ЛКМ — ход · ПКМ/СКМ-тяга — панорама · колесо или +/- — зум · "
+                      "стрелки — сдвиг · C — центр · 1/2 — копировать",
+                 font=('Arial', 8), fg='#555').pack(side=tk.TOP)
+
         self.canvas.bind('<Button-1>', self.on_click)
-        self.canvas.bind('<Motion>', self.on_motion)
+        self.canvas.bind('<Motion>', self.on_hover)
         self.canvas.bind('<Leave>', self.on_leave)
+        for btn in (2, 3):
+            self.canvas.bind(f'<ButtonPress-{btn}>', self.pan_start)
+            self.canvas.bind(f'<B{btn}-Motion>', self.pan_move)
+            self.canvas.bind(f'<ButtonRelease-{btn}>', self.pan_end)
+        self.canvas.bind('<MouseWheel>', self.on_wheel)
+        self.root.bind('<Key>', self.on_key)
 
-        self.root.bind('<Key-1>', self.on_debug_key)
+        self.draw()
 
-        self.draw_board()
+    # ---------- геометрия ----------
 
-    def on_first_player_change(self):
-        if self.board.move_history:
-            self.restart_game()
+    def b2p(self, bx, by):
+        return (self.CANVAS / 2 + (bx - self.cam_x) * self.cell,
+                self.CANVAS / 2 + (by - self.cam_y) * self.cell)
+
+    def p2b(self, px, py):
+        return (int(round(self.cam_x + (px - self.CANVAS / 2) / self.cell)),
+                int(round(self.cam_y + (py - self.CANVAS / 2) / self.cell)))
+
+    def visible(self):
+        half = self.CANVAS / (2 * self.cell)
+        return (int(self.cam_x - half) - 1, int(self.cam_x + half) + 2,
+                int(self.cam_y - half) - 1, int(self.cam_y + half) + 2)
+
+    def ensure_visible(self, bx, by):
+        half = self.CANVAS / (2 * self.cell) * 0.8
+        if abs(bx - self.cam_x) > half or abs(by - self.cam_y) > half:
+            self.cam_x, self.cam_y = float(bx), float(by)
+
+    def center_last(self):
+        if self.last_move:
+            self.cam_x, self.cam_y = map(float, self.last_move)
         else:
-            self.update_status()
-            if self.first_player.get() == PLAYER_O:
-                self.start_computer_first_move()
+            self.cam_x = self.cam_y = 0.0
+        self.draw()
 
-    def start_computer_first_move(self):
-        if self.first_player.get() == PLAYER_O and not self.board.move_history:
-            self.current_player = PLAYER_O
-            self.is_computer_thinking = True
-            self.status_label.config(text='Компьютер думает...')
-            threading.Thread(target=self.computer_move, daemon=True).start()
+    # ---------- отрисовка ----------
 
-    def update_status(self):
-        if self.current_player == PLAYER_X:
-            self.status_label.config(text='Ваш ход (X) — [1] скопировать отладку')
-        else:
-            self.status_label.config(text='Компьютер думает...')
+    def draw(self):
+        c = self.canvas
+        c.delete('all')
+        x0, x1, y0, y1 = self.visible()
 
-    def on_debug_key(self, event):
-        self.copy_debug_to_clipboard()
+        for bx in range(x0, x1 + 1):
+            px, _ = self.b2p(bx, 0)
+            c.create_line(px, 0, px, self.CANVAS, fill='#C8B08A')
+        for by in range(y0, y1 + 1):
+            _, py = self.b2p(0, by)
+            c.create_line(0, py, self.CANVAS, py, fill='#C8B08A')
 
-    def copy_debug_to_clipboard(self):
-        if not DEBUG_LOG:
-            self.status_label.config(text='Лога нет — ИИ ещё не ходил')
-            return
-        text = '\n'.join(DEBUG_LOG)
-        self.root.clipboard_clear()
-        self.root.clipboard_append(text)
-        self.status_label.config(text=f'Отладка скопирована ({len(DEBUG_LOG)} строк)')
+        for bx in range(x0, x1 + 1):
+            if bx % 5 == 0:
+                px, _ = self.b2p(bx, 0)
+                c.create_text(px, 10, text=str(bx), fill='#666', font=('Arial', 8))
+        for by in range(y0, y1 + 1):
+            if by % 5 == 0:
+                _, py = self.b2p(0, by)
+                c.create_text(14, py, text=str(by), fill='#666', font=('Arial', 8))
 
-    def board_coord_to_pixel(self, board_x: int, board_y: int) -> Tuple[int, int]:
-        grid_x = board_x + self.board_size // 2
-        grid_y = board_y + self.board_size // 2
-        pixel_x = self.offset + grid_x * self.cell_size + self.cell_size // 2
-        pixel_y = self.offset + grid_y * self.cell_size + self.cell_size // 2
-        return (pixel_x, pixel_y)
+        _, o = self.b2p(0, 0)
+        ox, _ = self.b2p(0, 0)
+        c.create_line(ox - 4, o, ox + 4, o, fill='#999')
+        c.create_line(ox, o - 4, ox, o + 4, fill='#999')
 
-    def pixel_to_board(self, pixel_x: int, pixel_y: int) -> Optional[Tuple[int, int]]:
-        rel_x = pixel_x - self.offset
-        rel_y = pixel_y - self.offset
-        field_size = self.board_size * self.cell_size
-        if not (0 <= rel_x < field_size and 0 <= rel_y < field_size):
-            return None
-        board_x = rel_x // self.cell_size - self.board_size // 2
-        board_y = rel_y // self.cell_size - self.board_size // 2
-        return (board_x, board_y)
+        if self.hover and not self.thinking and not self.game_over \
+                and self.current == PLAYER_X and self.board.is_empty(*self.hover):
+            px, py = self.b2p(*self.hover)
+            h = self.cell / 2 - 1
+            c.create_rectangle(px - h, py - h, px + h, py + h,
+                               fill='#FFEB99', outline='#FFA500')
 
-    def draw_board(self):
-        self.canvas.delete('all')
-        field_size = self.board_size * self.cell_size
+        r = max(3, self.cell * 0.32)
+        for (x, y), p in self.board.grid.items():
+            if not (x0 <= x <= x1 and y0 <= y <= y1):
+                continue
+            px, py = self.b2p(x, y)
+            if p == PLAYER_X:
+                c.create_line(px - r, py - r, px + r, py + r, fill='red', width=2)
+                c.create_line(px + r, py - r, px - r, py + r, fill='red', width=2)
+            else:
+                c.create_oval(px - r, py - r, px + r, py + r, outline='blue', width=2)
 
-        for i in range(self.board_size + 1):
-            x = self.offset + i * self.cell_size
-            self.canvas.create_line(x, self.offset, x, self.offset + field_size, fill='#8B7355')
-            self.canvas.create_line(self.offset, x, self.offset + field_size, x, fill='#8B7355')
+        if self.last_move:
+            px, py = self.b2p(*self.last_move)
+            h = self.cell / 2 - 1
+            c.create_rectangle(px - h, py - h, px + h, py + h,
+                               outline='#2E8B57', width=2)
 
-        half = self.board_size // 2
-        for i in range(self.board_size + 1):
-            coord_x = i - half
-            coord_y = i - half
+        if self.win_line:
+            pts = [self.b2p(x, y) for x, y in self.win_line]
+            for px, py in pts:
+                c.create_oval(px - r - 3, py - r - 3, px + r + 3, py + r + 3,
+                              outline='#00AA00', width=3)
 
-            if i % 5 == 0 or i == self.board_size:
-                px = self.offset + i * self.cell_size
-                self.canvas.create_text(px, self.offset - 15, text=str(coord_x),
-                                        fill='#333', font=('Arial', 9))
-                py = self.offset + i * self.cell_size
-                self.canvas.create_text(self.offset - 20, py, text=str(coord_y),
-                                        fill='#333', font=('Arial', 9))
-
-        if (self.hover_cell is not None and self.current_player == PLAYER_X
-                and not self.is_computer_thinking):
-            hx, hy = self.hover_cell
-            if self.board.is_empty(hx, hy):
-                px, py = self.board_coord_to_pixel(hx, hy)
-                m = 2
-                self.canvas.create_rectangle(
-                    px - self.cell_size // 2 + m, py - self.cell_size // 2 + m,
-                    px + self.cell_size // 2 - m, py + self.cell_size // 2 - m,
-                    fill='#FFEB99', outline='#FFA500', width=2)
-
-        for (x, y), player in self.board.grid.items():
-            px, py = self.board_coord_to_pixel(x, y)
-            if (self.offset <= px <= self.offset + field_size and
-                    self.offset <= py <= self.offset + field_size):
-                if player == PLAYER_X:
-                    m = self.cell_size // 4
-                    self.canvas.create_line(px - m, py - m, px + m, py + m, fill='red', width=2)
-                    self.canvas.create_line(px + m, py - m, px - m, py + m, fill='red', width=2)
-                else:
-                    m = self.cell_size // 4
-                    self.canvas.create_oval(px - m, py - m, px + m, py + m, outline='blue', width=2)
-
-    def on_motion(self, event):
-        if self.is_computer_thinking:
-            return
-        new_cell = self.pixel_to_board(event.x, event.y)
-        if new_cell is not None:
-            hx, hy = new_cell
-            fh = self.board_size // 2
-            if not (-fh <= hx <= fh and -fh <= hy <= fh):
-                new_cell = None
-        if new_cell != self.hover_cell:
-            self.hover_cell = new_cell
-            self.draw_board()
-
-    def on_leave(self, event):
-        if self.is_computer_thinking:
-            return
-        if self.hover_cell is not None:
-            self.hover_cell = None
-            self.draw_board()
+    # ---------- ввод ----------
 
     def on_click(self, event):
-        if self.is_computer_thinking:
+        if self.thinking or self.game_over or self.current != PLAYER_X:
             return
-        if self.current_player != PLAYER_X:
+        cell = self.p2b(event.x, event.y)
+        if not self.board.is_empty(*cell):
             return
-        cell = self.pixel_to_board(event.x, event.y)
-        if cell is None:
+        self.place(cell, PLAYER_X)
+        if self.finish_if_over(PLAYER_X):
             return
-        bx, by = cell
-        if self.board.make_move(bx, by, PLAYER_X):
-            self.draw_board()
-            if check_five(self.board, PLAYER_X):
-                messagebox.showinfo('Победа!', 'Вы выиграли!')
-                return
-            self.current_player = PLAYER_O
-            self.hover_cell = None
-            self.status_label.config(text='Компьютер думает...')
-            self.is_computer_thinking = True
-            threading.Thread(target=self.computer_move, daemon=True).start()
+        self.current = PLAYER_O
+        self.start_ai()
 
-    def computer_move(self):
-        move = get_best_move(self.board, PLAYER_O)
-        self.board.make_move(move[0], move[1], PLAYER_O)
-        self.root.after(0, self._after_computer_move)
-
-    def _after_computer_move(self):
-        self.is_computer_thinking = False
-        self.draw_board()
-        if check_five(self.board, PLAYER_O):
-            messagebox.showinfo('Поражение', 'Компьютер выиграл!')
+    def on_hover(self, event):
+        if self.thinking or self.game_over:
             return
-        self.current_player = PLAYER_X
-        self.status_label.config(text='Ваш ход (X) — [1] скопировать отладку')
+        cell = self.p2b(event.x, event.y)
+        if cell != self.hover:
+            self.hover = cell
+            self.draw()
 
-    def restart_game(self):
-        if self.is_computer_thinking:
+    def on_leave(self, event):
+        if self.hover is not None:
+            self.hover = None
+            self.draw()
+
+    def pan_start(self, event):
+        self._pan_from = (event.x, event.y, self.cam_x, self.cam_y)
+
+    def pan_move(self, event):
+        if not self._pan_from:
             return
-        self.board = Board()
-        self.current_player = PLAYER_X
-        self.hover_cell = None
-        DEBUG_LOG.clear()
+        x0, y0, cx, cy = self._pan_from
+        self.cam_x = cx - (event.x - x0) / self.cell
+        self.cam_y = cy - (event.y - y0) / self.cell
+        self.draw()
 
-        if self.first_player.get() == PLAYER_O:
-            self.start_computer_first_move()
+    def pan_end(self, event):
+        self._pan_from = None
+
+    def on_wheel(self, event):
+        step = 2 if event.delta > 0 else -2
+        self.cell = max(self.MIN_CELL, min(self.MAX_CELL, self.cell + step))
+        self.draw()
+
+    def on_key(self, event):
+        k = event.keysym
+        step = 3
+        if k == 'Left':
+            self.cam_x -= step
+        elif k == 'Right':
+            self.cam_x += step
+        elif k == 'Up':
+            self.cam_y -= step
+        elif k == 'Down':
+            self.cam_y += step
+        elif k in ('plus', 'KP_Add', 'equal'):
+            self.cell = min(self.MAX_CELL, self.cell + 2)
+        elif k in ('minus', 'KP_Subtract'):
+            self.cell = max(self.MIN_CELL, self.cell - 2)
+        elif k in ('c', 'C', 'с', 'С'):
+            self.center_last(); return
+        elif k == '1':
+            self.copy_analysis(); return
+        elif k == '2':
+            self.copy_game(); return
         else:
-            self.status_label.config(text='Ваш ход (X) — [1] скопировать отладку')
+            return
+        self.draw()
 
-        self.draw_board()
+    # ---------- ходы и состояние ----------
+
+    def place(self, cell, player):
+        self.board.make_move(cell[0], cell[1], player)
+        self.last_move = cell
+        self.game_log.append(f"{len(self.game_log) + 1}. {player_name(player)} {cell}")
+        self.ensure_visible(*cell)
+        self.draw()
+
+    @staticmethod
+    def find_win_line(board, player):
+        for (x, y), p in board.grid.items():
+            if p != player:
+                continue
+            for dx, dy in ((1, 0), (0, 1), (1, 1), (1, -1)):
+                cells = [(x, y)]
+                nx, ny = x + dx, y + dy
+                while board.get_cell(nx, ny) == player:
+                    cells.append((nx, ny)); nx += dx; ny += dy
+                nx, ny = x - dx, y - dy
+                while board.get_cell(nx, ny) == player:
+                    cells.insert(0, (nx, ny)); nx -= dx; ny -= dy
+                if len(cells) >= WIN_LENGTH:
+                    return cells
+        return []
+
+    def finish_if_over(self, player):
+        if check_five(self.board, player):
+            self.game_over = True
+            self.win_line = self.find_win_line(self.board, player)
+            self.draw()
+            who = "Вы выиграли!" if player == PLAYER_X else "Компьютер выиграл!"
+            self.status.config(text=who)
+            messagebox.showinfo("Игра окончена", who)
+            return True
+        if len(self.board.move_history) >= self.MAX_MOVES:
+            self.game_over = True
+            self.status.config(text="Ничья (лимит ходов)")
+            messagebox.showinfo("Игра окончена", "Ничья по лимиту ходов")
+            return True
+        return False
+
+    # ---------- фоновый поиск ----------
+
+    def start_ai(self):
+        if self.game_over or self.thinking:
+            return
+        self.thinking = True
+        self.gen += 1
+        gen = self.gen
+        snapshot = self.board.copy()
+        self.hover = None
+        self.status.config(text="Компьютер думает...")
+        self.draw()
+        t0 = time.perf_counter()
+
+        def work():
+            try:
+                move = get_best_move(snapshot, PLAYER_O)
+                analysis = "\n".join(DEBUG_LOG)
+                err = None
+            except Exception as e:
+                move, analysis, err = None, "", f"{type(e).__name__}: {e}"
+            elapsed = time.perf_counter() - t0
+            self.root.after(0, lambda: self.ai_done(gen, move, analysis, err, elapsed))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def ai_done(self, gen, move, analysis, err, elapsed):
+        if gen != self.gen:
+            return                        # результат устаревшей партии
+        self.thinking = False
+        self.last_analysis = analysis
+        if err or move is None:
+            self.status.config(text=f"Ошибка поиска: {err}")
+            self.current = PLAYER_X
+            return
+        self.place(move, PLAYER_O)
+        if self.finish_if_over(PLAYER_O):
+            return
+        self.current = PLAYER_X
+        self.status.config(text=f"Ваш ход (X) · ИИ думал {elapsed:.2f} с")
+        self.draw()
+
+    # ---------- управление партией ----------
+
+    def new_game(self):
+        self.gen += 1                     # отменяем результат текущего поиска
+        self.thinking = False
+        self.board = Board()
+        self.game_over = False
+        self.win_line = []
+        self.last_move = None
+        self.hover = None
+        self.game_log = []
+        self.last_analysis = ""
+        self.cam_x = self.cam_y = 0.0
+        self.current = PLAYER_X
+        self.status.config(text="Ваш ход (X)")
+        self.draw()
+        if self.first_player.get() == PLAYER_O:
+            self.current = PLAYER_O
+            self.start_ai()
+
+    def on_first_change(self):
+        self.new_game()
+
+    def copy_analysis(self):
+        text = self.last_analysis or "(анализа ещё нет)"
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.status.config(text=f"Анализ скопирован ({len(text)} симв.)")
+
+    def copy_game(self):
+        text = "\n".join(self.game_log) or "(партия пуста)"
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.status.config(text=f"Партия скопирована ({len(self.game_log)} ходов)")
 
     def run(self):
         self.root.mainloop()

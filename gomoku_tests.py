@@ -344,6 +344,26 @@ def test_vct_defense_not_needed():
     assert find_vct_defense(b, PLAYER_O, depth=4) is None
 
 
+@case("Board.copy: снапшот независим")
+def test_board_copy():
+    b = build([(0, 0), (1, 0)], [(0, 1)])
+    c = b.copy()
+    assert c.grid == b.grid and c.zhash == b.zhash
+    c.make_move(5, 5, PLAYER_X)
+    assert (5, 5) not in b.grid
+    assert b.zhash != c.zhash
+
+
+@case("поиск на снапшоте не меняет исходную доску")
+def test_search_on_snapshot():
+    b = build([(0, 0), (1, 0), (2, 0)], [(10, 10)])
+    before, h = dict(b.grid), b.zhash
+    c = b.copy()
+    get_best_move(c, PLAYER_X)
+    assert b.grid == before and b.zhash == h, "исходная доска изменилась"
+    assert c.grid == before and c.zhash == h, "снапшот не восстановлен"
+
+
 # ---------- раннер и утилиты ----------
 
 def run_tests(only: Optional[str] = None) -> int:
