@@ -1158,10 +1158,10 @@ class GomokuGUI:
         fp = tk.Frame(top)
         fp.pack(side=tk.LEFT)
         tk.Label(fp, text="Первым ходит:", font=('Arial', 10)).pack(side=tk.LEFT)
-        tk.Radiobutton(fp, text="Игрок (X)", variable=self.ai_starts,
+        tk.Radiobutton(fp, text="Игрок", variable=self.ai_starts,
                        value=False, command=self.on_first_change,
                        font=('Arial', 10)).pack(side=tk.LEFT)
-        tk.Radiobutton(fp, text="ИИ (X)", variable=self.ai_starts,
+        tk.Radiobutton(fp, text="ИИ", variable=self.ai_starts,
                        value=True, command=self.on_first_change,
                        font=('Arial', 10)).pack(side=tk.LEFT)
 
