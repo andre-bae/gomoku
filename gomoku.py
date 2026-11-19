@@ -4,6 +4,7 @@ from tkinter import filedialog
 from typing import Optional, List, Tuple, Dict
 import threading
 import json
+import time
 
 from gomoku_analysis import (
     analyze_threats, is_double_threat_new, is_winning_threat_set,
@@ -11,7 +12,6 @@ from gomoku_analysis import (
     FIVE, LIVE_FOUR, FOUR, LIVE_THREE, SLEEPING_THREE, window_potential,
 )
 
-import time
 
 MASK64 = (1 << 64) - 1
 POSITIONAL_TIME_LIMIT = 2.0   # секунд на позиционную фазу хода
@@ -34,6 +34,8 @@ EMPTY = 0
 PLAYER_X = 1
 PLAYER_O = 2
 WIN_LENGTH = 5
+VCF_LOG_MAX_INDENT = 2
+
 
 # Отладочный лог
 DEBUG_LOG: List[str] = []
@@ -236,6 +238,7 @@ def get_potential_threats(board: Board, x: int, y: int, player: int) -> List[str
             out.append('closed_three')
     return list(dict.fromkeys(out))
 
+
 def generate_four_moves(board: Board, player: int) -> List[Tuple[int, int]]:
     """Этап 3: точный и быстрый критерий через окна анализатора."""
     return sorted(four_move_candidates(board, player))
@@ -245,6 +248,7 @@ def generate_threat_moves(board: Board, player: int) -> List[Tuple[int, int]]:
     """Этап 6: точный набор ходов-угроз через окна анализатора."""
     return sorted(threat_move_candidates(board, player))
 
+
 def count_all_open_threes(board: Board, player: int, debug: bool = False) -> int:
     """Этап 2: считаем только ЖИВЫЕ тройки (способные стать живой четвёркой)."""
     threats = analyze_threats(board, player)
@@ -253,6 +257,7 @@ def count_all_open_threes(board: Board, player: int, debug: bool = False) -> int
         for t in live:
             log(f"    живая тройка: камни={t.stones} ключевые={t.points}")
     return len(live)
+
 
 def check_double_threat(board: Board, player: int) -> bool:
     """Этап 2: вилки считаются по уникальным угрозам нового анализатора."""
@@ -294,7 +299,8 @@ def search_vcf(board: Board, depth: int, player: int, is_attacking: bool,
     moves = generate_four_moves(board, attacker)
     if not moves:
         return None
-    log(f"{ind}VCF d={depth} {player_name(attacker)}: {len(moves)} четвёрок -> {moves}")
+    if indent <= VCF_LOG_MAX_INDENT:
+        log(f"{ind}VCF d={depth} {player_name(attacker)}: {len(moves)} четвёрок -> {moves}")
 
     for move in moves:
         board.make_move(move[0], move[1], attacker)
@@ -340,6 +346,7 @@ def search_vcf(board: Board, depth: int, player: int, is_attacking: bool,
 
     return None
 
+
 def search_vct(board: Board, depth: int, player: int, is_attacking: bool,
                path=None, indent: int = 0, budget=None, tt=None) -> Optional[Tuple[int, int]]:
     """
@@ -378,7 +385,8 @@ def search_vct(board: Board, depth: int, player: int, is_attacking: bool,
     moves = generate_threat_moves(board, attacker)
     if not moves:
         return None
-    log(f"{ind}VCT d={depth} {player_name(attacker)}: {len(moves)} ходов-угроз")
+    if indent <= VCF_LOG_MAX_INDENT:
+        log(f"{ind}VCT d={depth} {player_name(attacker)}: {len(moves)} ходов-угроз")
 
     result = None
     for move in moves:
@@ -492,6 +500,7 @@ def find_all_open_three_blocks(board: Board, player: int) -> List[Tuple[int, int
             points.update(t.points)
     return sorted(points)
 
+
 def find_vcf_defense(board: Board, player: int, depth: int = 12,
                      known_threat: Optional[Tuple[int, int]] = None) -> Optional[Tuple[int, int]]:
     """
@@ -521,20 +530,32 @@ def find_vcf_defense(board: Board, player: int, depth: int = 12,
         if not board.is_empty(move[0], move[1]):
             continue
         board.make_move(move[0], move[1], player)
-        still = search_vcf(board, depth=depth, player=opponent,
-                           is_attacking=True, budget=[2000])
-        if still is None:
-            score = evaluate_position(board, player, to_move=opponent)
-            verified.append((score, move))
-            log(f"    защита {move} опровергает VCF (оценка {score})")
-        else:
-            log(f"    защита {move} не помогает: VCF {still}")
+
+        still_vcf = search_vcf(board, depth=depth, player=opponent,
+                               is_attacking=True, budget=[2000])
+        if still_vcf is not None:
+            log(f"    защита {move} не помогает: VCF {still_vcf}")
+            board.undo_move()
+            continue
+
+        # VCF отбит — проверяем, не выигрывает ли противник через тройки
+        still_vct = search_vct(board, depth=4, player=opponent,
+                               is_attacking=True, budget=[800], tt={})
+
+        # тай-брейк с просмотром лучшего ответа противника, а не статикой
+        score = minimax(board, depth=2, alpha=-float('inf'), beta=float('inf'),
+                        is_maximizing=False, player=player, budget=[3000], tt={})
+
+        verified.append((0 if still_vct is None else 1, score, move))
+        log(f"    защита {move}: VCF нет, VCT "
+            f"{'нет' if still_vct is None else still_vct}, просмотр {score}")
         board.undo_move()
 
     if not verified:
         return None
-    verified.sort(key=lambda x: (-x[0], x[1]))
-    return verified[0][1]
+    # сначала те, что гасят и VCF, и VCT; внутри группы — по просмотру
+    verified.sort(key=lambda t: (t[0], -t[1], t[2]))
+    return verified[0][2]
 
 def evaluate_threats_after_move(board: Board, player: int) -> Tuple[int, str]:
     max_level = 0
@@ -936,6 +957,7 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
 
     return best
 
+
 def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     DEBUG_LOG.clear()
     log(f"=== Ход ИИ ({player_name(player)}) ===")
@@ -1100,6 +1122,7 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     log(f"  -> ВЫБРАН: {best_move}")
     log(f"\n=== Финальный ход: {best_move} ===")
     return best_move
+
 
 class GomokuGUI:
     CANVAS = 660
@@ -1561,6 +1584,7 @@ class GomokuGUI:
 
     def run(self):
         self.root.mainloop()
+
 
 if __name__ == "__main__":
     app = GomokuGUI()
