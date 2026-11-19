@@ -2,17 +2,26 @@
 """
 Интерфейс «Крестики-нолики: Пять в ряд» — бесконечное поле на canvas.
 
-Запуск:
-    python play.py
-или
-    python gomoku.py
+Запуск:  python gomoku.py   (или python gomoku_ui.py)
 
-Отладочные инструменты временно расположены в боковой панели на месте
-кнопок выбора силы ИИ. Подробное назначение каждой кнопки — в окне
-«Правила игры», раздел «Кнопки и отладка».
+Исправлено в этой версии:
+  * критический сбой запуска: внутренний кэш ширины виджета больше не
+    перезаписывает служебное поле tkinter `_w` (из-за этого Tk получал
+    команду «0» и падал с invalid command name "0");
+  * у всех canvas-виджетов задана явная ширина — иначе Tk подставлял
+    умолчание 378 px и распира панель;
+  * производительность: фон кэшируется, скругления — обычные полигоны,
+    единый цикл отрисовки 60 к/с со склейкой событий, перерисовка только
+    при реальном изменении подсветки, прореживание сетки, отсечение камней;
+  * боковая панель 352 px (300 на узком окне): верх прокручивается
+    собственным скроллбаром, блок действий закреплён снизу — «Отменить»
+    и «Повторить» доступны всегда.
+
+Назначение каждой кнопки — в окне «Правила игры», раздел «Кнопки и отладка».
 """
 
 import json
+import math
 import os
 import threading
 import time
@@ -28,7 +37,6 @@ from gomoku import (
 # ---------------------------------------------------------------- палитра
 
 BG        = "#e8edf3"
-BG_DEEP   = "#dbe3ec"
 PANEL     = "#ffffff"
 PANEL_HI  = "#f5f7fa"
 SURFACE   = "#f0f3f7"
@@ -60,6 +68,7 @@ BANNER_T  = "#6b2737"
 BASE      = 46
 MIN_ZOOM  = 0.55
 MAX_ZOOM  = 2.35
+FRAME_MS  = 16
 STATE_FILE = "gomoku_ui_state.json"
 
 
@@ -68,22 +77,42 @@ def other(p):
 
 
 def mix(c1, c2, t):
-    t = max(0.0, min(1.0, t))
-    a = c1.lstrip("#"); b = c2.lstrip("#")
+    t = 0.0 if t < 0 else (1.0 if t > 1 else t)
+    a = c1.lstrip("#")
+    b = c2.lstrip("#")
     r = round(int(a[0:2], 16) * (1 - t) + int(b[0:2], 16) * t)
     g = round(int(a[2:4], 16) * (1 - t) + int(b[2:4], 16) * t)
     bl = round(int(a[4:6], 16) * (1 - t) + int(b[4:6], 16) * t)
     return "#%02x%02x%02x" % (r, g, bl)
 
 
+def rr_points(x0, y0, x1, y1, r, steps=3):
+    r = max(0.0, min(r, (x1 - x0) / 2.0, (y1 - y0) / 2.0))
+    pts = [x0 + r, y0, x1 - r, y0]
+
+    def arc(cx, cy, a0, a1):
+        for i in range(steps + 1):
+            a = math.radians(a0 + (a1 - a0) * i / steps)
+            pts.append(cx + r * math.cos(a))
+            pts.append(cy + r * math.sin(a))
+
+    arc(x1 - r, y0 + r, -90, 0)
+    pts.append(x1)
+    pts.append(y1 - r)
+    arc(x1 - r, y1 - r, 0, 90)
+    pts.append(x0 + r)
+    pts.append(y1)
+    arc(x0 + r, y1 - r, 90, 180)
+    pts.append(x0)
+    pts.append(y0 + r)
+    arc(x0 + r, y0 + r, 180, 270)
+    return pts
+
+
 def round_rect(cv, x0, y0, x1, y1, r, **kw):
-    r = max(0, min(r, (x1 - x0) / 2, (y1 - y0) / 2))
-    pts = [
-        x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r,
-        x1, y1 - r, x1, y1, x1 - r, y1, x0 + r, y1,
-        x0, y1, x0, y1 - r, x0, y0 + r, x0, y0,
-    ]
-    return cv.create_polygon(pts, smooth=True, splinesteps=18, **kw)
+    if r <= 0.6 or (x1 - x0) < 2 or (y1 - y0) < 2:
+        return cv.create_rectangle(x0, y0, x1, y1, **kw)
+    return cv.create_polygon(rr_points(x0, y0, x1, y1, r), **kw)
 
 
 def plural(n, one, few, many):
@@ -99,10 +128,24 @@ def coord(v):
     return "−" + str(abs(v)) if v < 0 else str(v)
 
 
+_MEASURE = {}
+
+
+def measure(font, text):
+    key = (id(font), text)
+    val = _MEASURE.get(key)
+    if val is None:
+        if len(_MEASURE) > 4096:
+            _MEASURE.clear()
+        val = font.measure(text)
+        _MEASURE[key] = val
+    return val
+
+
 # ---------------------------------------------------------------- кнопки
 
 class Chip(tk.Canvas):
-    """Округлая кнопка/пилюля с полным контролем цвета и откликом на наведение."""
+    """Округлая кнопка. Ширина кэшируется в _cw: поле _w принадлежит tkinter."""
 
     STYLES = {
         "primary":   (ACCENT,  "#ffffff", ACCENT_H, ACCENT_H),
@@ -114,10 +157,12 @@ class Chip(tk.Canvas):
     }
 
     def __init__(self, master, text, command=None, kind="secondary",
-                 height=38, radius=10, font=None, parent_bg=None):
-        self.pbg = parent_bg or master.cget("bg")
-        super().__init__(master, height=height, bg=self.pbg,
+                 height=38, radius=10, font=None, parent_bg=None, width=None):
+        pbg = parent_bg or master.cget("bg")
+        nat = width if width else max(38, measure(font, text) + 28 if font else 120)
+        super().__init__(master, width=nat, height=height, bg=pbg,
                          highlightthickness=0, bd=0, takefocus=0)
+        self.pbg = pbg
         self.text = text
         self.command = command
         self.kind = kind
@@ -127,7 +172,9 @@ class Chip(tk.Canvas):
         self._hover = False
         self._press = False
         self._h = height
-        self.bind("<Configure>", lambda e: self._redraw())
+        self._nat = nat
+        self._cw = 0
+        self.bind("<Configure>", self._conf)
         if command is not None:
             self.configure(cursor="hand2")
             self.bind("<Enter>", self._enter)
@@ -136,15 +183,21 @@ class Chip(tk.Canvas):
             self.bind("<ButtonRelease-1>", self._up)
         self._redraw()
 
+    def _conf(self, e):
+        if e.width != self._cw:
+            self._cw = e.width
+            self._redraw()
+
     def _enter(self, _):
-        if self.enabled:
+        if self.enabled and not self._hover:
             self._hover = True
             self._redraw()
 
     def _leave(self, _):
-        self._hover = False
-        self._press = False
-        self._redraw()
+        if self._hover or self._press:
+            self._hover = False
+            self._press = False
+            self._redraw()
 
     def _down(self, _):
         if self.enabled:
@@ -155,8 +208,8 @@ class Chip(tk.Canvas):
         was = self._press
         self._press = False
         self._redraw()
-        if was and self.enabled and self.command and 0 <= e.x <= self.winfo_width() \
-                and 0 <= e.y <= self.winfo_height():
+        if was and self.enabled and self.command and \
+                0 <= e.x <= self.winfo_width() and 0 <= e.y <= self.winfo_height():
             self.command()
 
     def set_text(self, text):
@@ -180,10 +233,8 @@ class Chip(tk.Canvas):
 
     def _redraw(self):
         self.delete("all")
-        w = self.winfo_width()
+        w = self._cw or self._nat
         h = self._h
-        if w <= 1:
-            w = max(90, len(self.text) * 8 + 26)
         bg, fg, hov, br = self.STYLES.get(self.kind, self.STYLES["secondary"])
         if not self.enabled:
             bg, fg, br = SURF_HI, DIM, LINE
@@ -193,16 +244,14 @@ class Chip(tk.Canvas):
             bg = hov
         round_rect(self, 1, 1, w - 1, h - 1, self.radius,
                    fill=bg, outline=br, width=1)
-        dy = 1 if (self._press and self.enabled) else 0
-        self.create_text(w / 2, h / 2 + dy, text=self.text, fill=fg,
-                         font=self.font, anchor="center")
+        self.create_text(w / 2, h / 2 + (1 if self._press and self.enabled else 0),
+                         text=self.text, fill=fg, font=self.font, anchor="center")
 
 
 class PlayerChip(tk.Canvas):
-    """Овал игрока: символ знака + имя. Клик до старта меняет, кто играет X."""
-
     def __init__(self, master, mark, on_click, font_sym, font_name, parent_bg=None):
-        super().__init__(master, height=46, bg=parent_bg or master.cget("bg"),
+        super().__init__(master, width=140, height=46,
+                         bg=parent_bg or master.cget("bg"),
                          highlightthickness=0, bd=0, takefocus=0)
         self.mark = mark
         self.on_click = on_click
@@ -212,38 +261,65 @@ class PlayerChip(tk.Canvas):
         self.active = False
         self.editable = True
         self._hover = False
+        self._cw = 0
+        self._short = ""
+        self._short_key = None
         self.configure(cursor="hand2")
-        self.bind("<Configure>", lambda e: self._redraw())
+        self.bind("<Configure>", self._conf)
         self.bind("<Enter>", self._enter)
         self.bind("<Leave>", self._leave)
         self.bind("<ButtonRelease-1>", self._click)
         self._redraw()
 
+    def _conf(self, e):
+        if e.width != self._cw:
+            self._cw = e.width
+            self._redraw()
+
     def _enter(self, _):
-        if self.editable:
+        if self.editable and not self._hover:
             self._hover = True
             self._redraw()
 
     def _leave(self, _):
-        self._hover = False
-        self._redraw()
+        if self._hover:
+            self._hover = False
+            self._redraw()
 
     def _click(self, _):
         if self.editable and self.on_click:
             self.on_click()
 
-    def update(self, name, active, editable):
-        self.name = name
-        self.active = active
-        self.editable = editable
-        self.configure(cursor="hand2" if editable else "")
-        self._redraw()
+    def set_state(self, name, active, editable):
+        if (name, active, editable) != (self.name, self.active, self.editable):
+            self.name = name
+            self.active = active
+            self.editable = editable
+            self.configure(cursor="hand2" if editable else "")
+            self._redraw()
+
+    def _fit(self, w):
+        key = (self.name, w)
+        if self._short_key == key:
+            return self._short
+        avail = max(10, w - 48)
+        name = self.name
+        if measure(self.font_name, name) > avail:
+            lo, hi = 0, len(name)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if measure(self.font_name, name[:mid] + "…") <= avail:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            name = (name[:lo] + "…") if lo else "…"
+        self._short_key = key
+        self._short = name
+        return name
 
     def _redraw(self):
         self.delete("all")
-        w = self.winfo_width()
-        if w <= 1:
-            w = 150
+        w = self._cw or 140
         h = 46
         if self.active:
             bg, br = ACCENT_S, ACCENT
@@ -255,28 +331,25 @@ class PlayerChip(tk.Canvas):
         col = X_COLOR if self.mark == PLAYER_X else O_COLOR
         self.create_text(18, h / 2, text=player_name(self.mark), fill=col,
                          font=self.font_sym, anchor="w")
-        name = self.name
-        avail = w - 46
-        while name and self.font_name.measure(name) > avail:
-            name = name[:-1]
-        if name != self.name:
-            name = name[:-1] + "…" if len(name) > 1 else "…"
-        self.create_text(40, h / 2, text=name, fill=TEXT,
+        self.create_text(40, h / 2, text=self._fit(w), fill=TEXT,
                          font=self.font_name, anchor="w")
         if self.active:
             self.create_oval(w - 15, h / 2 - 3, w - 9, h / 2 + 3,
                              fill=col, outline="")
 
 
-# ---------------------------------------------------------------- окно
+# ---------------------------------------------------------------- приложение
 
 class GomokuApp:
+    SIDE_W = 352
+    SIDE_NARROW = 300
+
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Крестики-нолики: Пять в ряд")
         self.root.configure(bg=BG)
         self.root.geometry("1240x820")
-        self.root.minsize(940, 620)
+        self.root.minsize(900, 560)
 
         self.F_TITLE = tkfont.Font(family="Segoe UI", size=17, weight="bold")
         self.F_SUB   = tkfont.Font(family="Segoe UI", size=9)
@@ -321,19 +394,30 @@ class GomokuApp:
         self.drag = None
         self.width = 0
         self.height = 0
-        self._raf = False
+        self._loop = False
+        self._dirty = True
+        self._last_draw = 0.0
+        self._bg_size = None
         self._hud_hits = []
+        self._hover_key = None
+        self._cursor = "crosshair"
         self._hint_on = True
         self._help_win = None
         self._an_win = None
         self._rec_win = None
         self._reset_armed = False
+        self._side_w = self.SIDE_W
+        self._sy = 0
+        self._content_h = 1
+        self._view_h = 1
+        self._sb_drag = None
+        self._sb_hover = False
 
         self._load_state()
         self._build()
         self._sync()
-        self.root.after(60, self._first_layout)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.after(40, self._first_layout)
 
     # ------------------------------------------------------- состояние
 
@@ -374,10 +458,11 @@ class GomokuApp:
             if isinstance(rec, dict):
                 for k, v in rec.items():
                     if isinstance(v, dict):
+                        best = v.get("best")
                         self.records[str(k)] = {
                             "wins": max(0, int(v.get("wins", 0))),
                             "losses": max(0, int(v.get("losses", 0))),
-                            "best": v.get("best") if isinstance(v.get("best"), int) else None,
+                            "best": best if isinstance(best, int) and best > 0 else None,
                         }
         except Exception:
             pass
@@ -385,12 +470,9 @@ class GomokuApp:
     def _save_state(self):
         try:
             with open(self._state_path(), "w", encoding="utf-8") as f:
-                json.dump({
-                    "mode": self.mode,
-                    "human_is_x": self.human_is_x,
-                    "pvp_swap": self.pvp_swap,
-                    "records": self.records,
-                }, f, ensure_ascii=False, indent=2)
+                json.dump({"mode": self.mode, "human_is_x": self.human_is_x,
+                           "pvp_swap": self.pvp_swap, "records": self.records},
+                          f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
@@ -408,10 +490,9 @@ class GomokuApp:
         top = tk.Frame(outer, bg=BG)
         top.pack(fill=tk.X, side=tk.TOP)
 
-        logo = tk.Canvas(top, width=46, height=46, bg=BG,
-                         highlightthickness=0, bd=0)
+        logo = tk.Canvas(top, width=46, height=46, bg=BG, highlightthickness=0, bd=0)
         logo.pack(side=tk.LEFT)
-        round_rect(logo, 1, 1, 45, 45, 14, fill=PANEL, outline=LINE_HI)
+        round_rect(logo, 1, 1, 45, 45, 14, fill=PANEL, outline=LINE_HI, width=1)
         logo.create_text(15, 24, text="X", fill=X_COLOR, font=self.F_SYM)
         logo.create_text(32, 24, text="O", fill=O_COLOR, font=self.F_SYM)
 
@@ -425,32 +506,78 @@ class GomokuApp:
         acts = tk.Frame(top, bg=BG)
         acts.pack(side=tk.RIGHT)
         self.btn_records = Chip(acts, "Статистика", self.open_records, "ghost",
-                                height=32, radius=16, font=self.F_SMALL, parent_bg=BG)
+                                height=32, radius=16, font=self.F_SMALL,
+                                parent_bg=BG, width=104)
         self.btn_records.pack(side=tk.RIGHT, padx=(6, 0))
-        self.btn_records.configure(width=104)
         self.btn_help = Chip(acts, "?", self.open_help, "ghost", height=32,
-                             radius=16, font=self.F_UI, parent_bg=BG)
-        self.btn_help.configure(width=34)
+                             radius=16, font=self.F_UI, parent_bg=BG, width=34)
         self.btn_help.pack(side=tk.RIGHT)
 
         body = tk.Frame(outer, bg=BG)
         body.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
 
-        self.board_frame = tk.Frame(body, bg=LINE, bd=0, highlightthickness=1,
+        self.side = tk.Frame(body, bg=PANEL, width=self._side_w,
+                             highlightthickness=1, highlightbackground=LINE,
+                             highlightcolor=LINE)
+        self.side.pack(side=tk.RIGHT, fill=tk.Y, padx=(16, 0))
+        self.side.pack_propagate(False)
+
+        self.board_frame = tk.Frame(body, bg=LINE, highlightthickness=1,
                                     highlightbackground=LINE, highlightcolor=LINE)
         self.board_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.canvas = tk.Canvas(self.board_frame, bg=BOARD_A, highlightthickness=0,
-                                bd=0, takefocus=1, cursor="crosshair")
+        self.canvas = tk.Canvas(self.board_frame, width=320, height=240,
+                                bg=BOARD_A, highlightthickness=0, bd=0,
+                                takefocus=1, cursor="crosshair")
         self.canvas.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
 
-        side = tk.Frame(body, bg=PANEL, width=326, highlightthickness=1,
-                        highlightbackground=LINE, highlightcolor=LINE)
-        side.pack(side=tk.RIGHT, fill=tk.Y, padx=(16, 0))
-        side.pack_propagate(False)
-        inner = tk.Frame(side, bg=PANEL)
-        inner.pack(fill=tk.BOTH, expand=True, padx=15, pady=14)
+        actions = tk.Frame(self.side, bg=PANEL)
+        actions.pack(side=tk.BOTTOM, fill=tk.X, padx=15, pady=(8, 14))
+        tk.Frame(self.side, bg=LINE, height=1).pack(side=tk.BOTTOM, fill=tk.X,
+                                                    padx=15)
 
-        # карточка состояния
+        self.primary = Chip(actions, "Начать игру", self.primary_action, "primary",
+                            height=42, radius=10, font=self.F_UI)
+        self.primary.pack(fill=tk.X)
+        pair = tk.Frame(actions, bg=PANEL)
+        pair.pack(fill=tk.X, pady=(7, 0))
+        pair.columnconfigure(0, weight=1, uniform="a")
+        pair.columnconfigure(1, weight=1, uniform="a")
+        self.undo_btn = Chip(pair, "↶ Отменить", self.undo, "secondary",
+                             height=38, radius=9, font=self.F_SMALL, width=100)
+        self.undo_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.redo_btn = Chip(pair, "↷ Повторить", self.redo, "secondary",
+                             height=38, radius=9, font=self.F_SMALL, width=100)
+        self.redo_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        self.resume_btn = Chip(actions, "Ход ИИ — продолжить", self.resume_ai,
+                               "secondary", height=36, radius=9, font=self.F_SMALL)
+        self.resume_btn.pack(fill=tk.X, pady=(7, 0))
+        self.rules_btn = Chip(actions, "Правила игры", self.open_help, "ghost",
+                              height=34, radius=9, font=self.F_SMALL)
+        self.rules_btn.pack(fill=tk.X, pady=(7, 0))
+        tk.Label(actions, text="U — отменить · Y — повторить · ? — правила",
+                 bg=PANEL, fg=DIM, font=self.F_TINY, anchor="w").pack(fill=tk.X,
+                                                                      pady=(8, 0))
+
+        wrap = tk.Frame(self.side, bg=PANEL)
+        wrap.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=(15, 9), pady=(14, 6))
+        self._scv = tk.Canvas(wrap, width=10, height=10, bg=PANEL,
+                              highlightthickness=0, bd=0, takefocus=0)
+        self._sbar = tk.Canvas(wrap, width=8, height=10, bg=PANEL,
+                               highlightthickness=0, bd=0, takefocus=0)
+        self._sbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(4, 0))
+        self._scv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        inner = tk.Frame(self._scv, bg=PANEL)
+        self._inner = inner
+        self._swin = self._scv.create_window(0, 0, anchor="nw", window=inner)
+        inner.bind("<Configure>", self._content_conf)
+        self._scv.bind("<Configure>", self._scroll_conf)
+        self._sbar.bind("<Configure>", lambda e: self._draw_sbar())
+        self._sbar.bind("<ButtonPress-1>", self._sb_down)
+        self._sbar.bind("<B1-Motion>", self._sb_move)
+        self._sbar.bind("<ButtonRelease-1>", lambda e: setattr(self, "_sb_drag", None))
+        self._sbar.bind("<Enter>", self._sb_enter)
+        self._sbar.bind("<Leave>", self._sb_leave)
+
         sc = tk.Frame(inner, bg=PANEL_HI, highlightthickness=1,
                       highlightbackground=LINE, highlightcolor=LINE)
         sc.pack(fill=tk.X)
@@ -464,20 +591,17 @@ class GomokuApp:
         self.kicker = tk.Label(head, text="", bg=PANEL_HI, fg=DIM,
                                font=self.F_EYE, anchor="w")
         self.kicker.pack(side=tk.LEFT, padx=(7, 0))
-        self.status = tk.Label(sci, text="", bg=PANEL_HI, fg=TEXT,
-                               font=self.F_STAT, anchor="w", justify="left",
-                               wraplength=272)
+        self.status = tk.Label(sci, text="", bg=PANEL_HI, fg=TEXT, font=self.F_STAT,
+                               anchor="w", justify="left", wraplength=270)
         self.status.pack(fill=tk.X, pady=(5, 0))
         self.moves_line = tk.Label(sci, text="", bg=PANEL_HI, fg=ACCENT,
                                    font=self.F_SMALL, anchor="w")
         self.moves_line.pack(fill=tk.X, pady=(7, 0))
-        self.meta = tk.Label(sci, text="", bg=PANEL_HI, fg=DIM,
-                             font=self.F_TINY, anchor="w")
+        self.meta = tk.Label(sci, text="", bg=PANEL_HI, fg=DIM, font=self.F_TINY,
+                             anchor="w")
         self.meta.pack(fill=tk.X, pady=(2, 0))
-        self.sc = sc
-        self.sci = sci
+        self.sc, self.sci, self.status_head = sc, sci, head
 
-        # игроки
         pl = tk.Frame(inner, bg=PANEL)
         pl.pack(fill=tk.X, pady=(13, 0))
         plh = tk.Frame(pl, bg=PANEL)
@@ -485,11 +609,10 @@ class GomokuApp:
         tk.Label(plh, text="ИГРОКИ", bg=PANEL, fg=MUTED,
                  font=self.F_EYE).pack(side=tk.LEFT)
         self.swap_btn = Chip(plh, "⇄", self.swap_players, "ghost", height=24,
-                             radius=8, font=self.F_SMALL)
-        self.swap_btn.configure(width=30)
+                             radius=8, font=self.F_SMALL, width=30)
         self.swap_btn.pack(side=tk.RIGHT)
-        self.pl_hint = tk.Label(pl, text="Щёлкните по овалу — кто играет X",
-                                bg=PANEL, fg=DIM, font=self.F_TINY, anchor="w")
+        self.pl_hint = tk.Label(pl, text="", bg=PANEL, fg=DIM, font=self.F_TINY,
+                                anchor="w")
         self.pl_hint.pack(fill=tk.X, pady=(3, 5))
         rows = tk.Frame(pl, bg=PANEL)
         rows.pack(fill=tk.X)
@@ -502,7 +625,6 @@ class GomokuApp:
                                  self.F_SYM, self.F_NAME)
         self.chip_o.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        # режим
         md = tk.Frame(inner, bg=PANEL)
         md.pack(fill=tk.X, pady=(13, 0))
         tk.Label(md, text="РЕЖИМ ПАРТИИ", bg=PANEL, fg=MUTED,
@@ -512,13 +634,14 @@ class GomokuApp:
         mrow.columnconfigure(0, weight=1, uniform="m")
         mrow.columnconfigure(1, weight=1, uniform="m")
         self.mode_ai = Chip(mrow, "С компьютером", lambda: self.set_mode("ai"),
-                            "toggle", height=34, radius=9, font=self.F_SMALL)
+                            "toggle", height=34, radius=9, font=self.F_SMALL,
+                            width=100)
         self.mode_ai.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self.mode_pvp = Chip(mrow, "Два игрока", lambda: self.set_mode("pvp"),
-                             "toggle", height=34, radius=9, font=self.F_SMALL)
+                             "toggle", height=34, radius=9, font=self.F_SMALL,
+                             width=100)
         self.mode_pvp.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        # отладочные инструменты (временно на месте кнопок сложности)
         dbg = tk.Frame(inner, bg=PANEL)
         dbg.pack(fill=tk.X, pady=(13, 0))
         dh = tk.Frame(dbg, bg=PANEL)
@@ -531,50 +654,17 @@ class GomokuApp:
         grid.pack(fill=tk.X, pady=(6, 0))
         for c in range(3):
             grid.columnconfigure(c, weight=1, uniform="d")
-        specs = [
-            ("Анализ 1", self.copy_analysis, 0, 0),
-            ("Партия 2", self.copy_game, 0, 1),
-            ("Всё 3", self.copy_all, 0, 2),
-            ("Просмотр A", self.open_analyses, 1, 0),
-            ("Сохранить S", self.save_game, 1, 1),
-            ("Центр C", self.center_last, 1, 2),
-        ]
-        self.dbg_btns = []
+        specs = [("Анализ 1", self.copy_analysis, 0, 0),
+                 ("Партия 2", self.copy_game, 0, 1),
+                 ("Всё 3", self.copy_all, 0, 2),
+                 ("Просмотр A", self.open_analyses, 1, 0),
+                 ("Сохранить S", self.save_game, 1, 1),
+                 ("Центр C", self.center_last, 1, 2)]
         for text, cmd, r, c in specs:
             b = Chip(grid, text, cmd, "secondary", height=30, radius=8,
-                     font=self.F_TINY)
+                     font=self.F_TINY, width=70)
             b.grid(row=r, column=c, sticky="ew",
                    padx=(0 if c == 0 else 3, 0 if c == 2 else 3), pady=(0, 5))
-            self.dbg_btns.append(b)
-
-        # действия
-        ac = tk.Frame(inner, bg=PANEL)
-        ac.pack(fill=tk.X, pady=(10, 0))
-        self.primary = Chip(ac, "Начать игру", self.primary_action, "primary",
-                            height=42, radius=10, font=self.F_UI)
-        self.primary.pack(fill=tk.X)
-        pair = tk.Frame(ac, bg=PANEL)
-        pair.pack(fill=tk.X, pady=(7, 0))
-        pair.columnconfigure(0, weight=1, uniform="a")
-        pair.columnconfigure(1, weight=1, uniform="a")
-        self.undo_btn = Chip(pair, "Отменить ход", self.undo, "secondary",
-                             height=38, radius=9, font=self.F_SMALL)
-        self.undo_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        self.redo_btn = Chip(pair, "Вернуть ход", self.redo, "secondary",
-                             height=38, radius=9, font=self.F_SMALL)
-        self.redo_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0))
-        self.resume_btn = Chip(ac, "Ход ИИ — продолжить", self.resume_ai,
-                               "secondary", height=36, radius=9, font=self.F_SMALL)
-        self.resume_btn.pack(fill=tk.X, pady=(7, 0))
-        self.rules_btn = Chip(ac, "Правила игры", self.open_help, "ghost",
-                              height=34, radius=9, font=self.F_SMALL)
-        self.rules_btn.pack(fill=tk.X, pady=(7, 0))
-
-        foot = tk.Frame(inner, bg=PANEL)
-        foot.pack(fill=tk.X, side=tk.BOTTOM, pady=(10, 0))
-        tk.Label(foot, text="U / Ctrl+Z — отменить · Y — вернуть · ? — правила",
-                 bg=PANEL, fg=DIM, font=self.F_TINY, wraplength=290,
-                 justify="left").pack(anchor="w")
 
         self._bind()
 
@@ -594,15 +684,115 @@ class GomokuApp:
         cv.bind("<ButtonRelease-2>", lambda e: setattr(self, "drag", None))
         cv.bind("<ButtonRelease-3>", lambda e: setattr(self, "drag", None))
         self.root.bind("<Key>", self._on_key)
+        self.root.bind("<MouseWheel>", self._on_root_wheel)
+        self.root.bind("<Configure>", self._on_root_conf)
+
+    def _on_root_conf(self, e):
+        if e.widget is not self.root:
+            return
+        want = self.SIDE_W if e.width >= 1080 else self.SIDE_NARROW
+        if want != self._side_w:
+            self._side_w = want
+            self.side.configure(width=want)
 
     def _first_layout(self):
-        self.width = max(1, self.canvas.winfo_width())
-        self.height = max(1, self.canvas.winfo_height())
-        self.view["x"] = self.width / 2 - BASE / 2
-        self.view["y"] = self.height / 2 - BASE / 2
+        w = max(1, self.canvas.winfo_width())
+        h = max(1, self.canvas.winfo_height())
+        if self.width <= 1:
+            self.width, self.height = w, h
+            self.view["x"] = w / 2 - BASE / 2
+            self.view["y"] = h / 2 - BASE / 2
         self.schedule()
 
-    # ------------------------------------------------------- геометрия
+    # ------------------------------------------------------- прокрутка панели
+
+    def _content_conf(self, e):
+        self._content_h = max(1, e.height)
+        self._scv.configure(scrollregion=(0, 0, e.width, self._content_h))
+        self._clamp_scroll()
+        self._draw_sbar()
+
+    def _scroll_conf(self, e):
+        self._view_h = max(1, e.height)
+        self._scv.itemconfigure(self._swin, width=e.width)
+        self.status.configure(wraplength=max(170, e.width - 32))
+        self._clamp_scroll()
+        self._draw_sbar()
+
+    def _max_scroll(self):
+        return max(0, self._content_h - self._view_h)
+
+    def _clamp_scroll(self):
+        m = self._max_scroll()
+        self._sy = 0 if self._sy < 0 else (m if self._sy > m else self._sy)
+        if self._content_h > 0:
+            self._scv.yview_moveto(self._sy / self._content_h)
+
+    def _scroll_by(self, dy):
+        if self._max_scroll() <= 0:
+            return
+        self._sy += dy
+        self._clamp_scroll()
+        self._draw_sbar()
+
+    def _draw_sbar(self):
+        sb = self._sbar
+        sb.delete("all")
+        h = sb.winfo_height()
+        if h <= 1 or self._max_scroll() <= 0:
+            return
+        round_rect(sb, 1, 0, 7, h, 3, fill=SURFACE, outline="")
+        th = max(30, h * self._view_h / self._content_h)
+        ty = (self._sy / self._max_scroll()) * (h - th)
+        round_rect(sb, 1, ty, 7, ty + th, 3,
+                   fill=ACCENT if (self._sb_hover or self._sb_drag) else LINE_HI,
+                   outline="")
+
+    def _sb_enter(self, _):
+        self._sb_hover = True
+        self._draw_sbar()
+
+    def _sb_leave(self, _):
+        self._sb_hover = False
+        self._draw_sbar()
+
+    def _sb_down(self, e):
+        if self._max_scroll() <= 0:
+            return
+        h = self._sbar.winfo_height()
+        th = max(30, h * self._view_h / self._content_h)
+        ty = (self._sy / self._max_scroll()) * (h - th)
+        if ty <= e.y <= ty + th:
+            self._sb_drag = (e.y, self._sy)
+        else:
+            self._sy = (e.y - th / 2) / max(1, h - th) * self._max_scroll()
+            self._clamp_scroll()
+            self._draw_sbar()
+            self._sb_drag = (e.y, self._sy)
+
+    def _sb_move(self, e):
+        if not self._sb_drag:
+            return
+        y0, s0 = self._sb_drag
+        h = self._sbar.winfo_height()
+        th = max(30, h * self._view_h / self._content_h)
+        self._sy = s0 + (e.y - y0) / max(1, h - th) * self._max_scroll()
+        self._clamp_scroll()
+        self._draw_sbar()
+
+    def _on_root_wheel(self, e):
+        if self._help_win or self._an_win or self._rec_win:
+            return
+        try:
+            x0 = self._scv.winfo_rootx()
+            y0 = self._scv.winfo_rooty()
+        except Exception:
+            return
+        if x0 <= e.x_root <= x0 + self._scv.winfo_width() and \
+                y0 <= e.y_root <= y0 + self._scv.winfo_height():
+            self._scroll_by(-40 if e.delta > 0 else 40)
+
+    # ------------------------------------------------------- геометрия поля
 
     def cs(self):
         return BASE * self.view["zoom"]
@@ -623,7 +813,7 @@ class GomokuApp:
         w, h = max(1, e.width), max(1, e.height)
         if w == self.width and h == self.height:
             return
-        if self.width:
+        if self.width > 1:
             self.view["x"] += (w - self.width) / 2
             self.view["y"] += (h - self.height) / 2
         else:
@@ -631,24 +821,27 @@ class GomokuApp:
             self.view["y"] = h / 2 - BASE / 2
         self.width, self.height = w, h
         self.hover = None
+        self._hover_key = None
         self.schedule()
 
     def set_zoom_at(self, z, px=None, py=None):
         z = max(MIN_ZOOM, min(MAX_ZOOM, z))
-        if px is None:
-            px = self.width / 2
-        if py is None:
-            py = self.height / 2
+        if abs(z - self.view["zoom"]) < 1e-6:
+            return
+        px = self.width / 2 if px is None else px
+        py = self.height / 2 if py is None else py
         wx, wy = self.wx(px), self.wy(py)
         self.view["zoom"] = z
         self.view["x"] = px - wx * BASE * z
         self.view["y"] = py - wy * BASE * z
         self.view_anim = None
+        self._hover_key = None
         self.schedule()
 
     def animate_to(self, target, dur=0.30):
-        if not self.width:
+        if self.width <= 1:
             self.view.update(target)
+            self.schedule()
             return
         self.view_anim = {"from": dict(self.view), "to": target,
                           "t0": time.perf_counter(), "dur": dur}
@@ -690,19 +883,15 @@ class GomokuApp:
 
     def ensure_visible(self, x, y):
         cs = self.cs()
-        px = self.sx(x) + cs / 2
-        py = self.sy(y) + cs / 2
+        px, py = self.sx(x) + cs / 2, self.sy(y) + cs / 2
         m = 70
         if m < px < self.width - m and m < py < self.height - m:
             return
         z = self.view["zoom"]
         self.animate_to({"x": self.width / 2 - (x + 0.5) * BASE * z,
-                         "y": self.height / 2 - (y + 0.5) * BASE * z,
-                         "zoom": z})
+                         "y": self.height / 2 - (y + 0.5) * BASE * z, "zoom": z})
 
     def ensure_line_visible(self):
-        if not self.win_line:
-            return
         m = 64
         for x, y in self.win_line:
             px, py = self.sx(x) + self.cs() / 2, self.sy(y) + self.cs() / 2
@@ -710,51 +899,67 @@ class GomokuApp:
                 self.fit_to_moves(True)
                 return
 
-    # ------------------------------------------------------- отрисовка
+    # ------------------------------------------------------- цикл отрисовки
 
     def schedule(self):
-        if self._raf:
+        self._dirty = True
+        if self._loop:
             return
-        self._raf = True
-        self.root.after(0, self._frame)
+        wait = FRAME_MS / 1000.0 - (time.perf_counter() - self._last_draw)
+        delay = int(wait * 1000) + 1 if wait > 0 else 0
+        self._loop = True
+        self.root.after(delay, self._tick)
 
-    def _frame(self):
-        self._raf = False
+    def _tick(self):
+        self._loop = False
         ts = time.perf_counter()
-        self.draw(ts)
-        if self._has_anim(ts):
-            self._raf = True
-            self.root.after(16, self._frame)
+        anim = self._has_anim(ts)
+        if self._dirty or anim:
+            self._dirty = False
+            self._last_draw = ts
+            self.draw(ts)
+            anim = self._has_anim(ts)
+        if anim or self._dirty:
+            self._loop = True
+            self.root.after(FRAME_MS, self._tick)
 
     def _has_anim(self, ts):
         if self.view_anim:
             return True
         if self.win_line and ts - self.win_start < 0.62:
             return True
-        for born in list(self.anim.values()):
+        for born in self.anim.values():
             if ts - born < 0.24:
                 return True
         return False
 
+    def _dragging(self):
+        return bool(self.drag and self.drag.get("moved"))
+
     def draw(self, ts=None):
-        ts = ts or time.perf_counter()
-        cv = self.canvas
+        ts = ts if ts is not None else time.perf_counter()
         if self.width <= 1:
             return
         if self.view_anim:
             a = self.view_anim
-            t = max(0.0, min(1.0, (ts - a["t0"]) / a["dur"]))
+            t = (ts - a["t0"]) / a["dur"]
+            t = 0.0 if t < 0 else (1.0 if t > 1 else t)
             e = 1 - (1 - t) ** 3
             for k in ("x", "y", "zoom"):
                 self.view[k] = a["from"][k] + (a["to"][k] - a["from"][k]) * e
             if t >= 1:
                 self.view_anim = None
-        cv.delete("all")
+        cv = self.canvas
+        if self._bg_size != (self.width, self.height):
+            cv.delete("bg")
+            self._draw_bg()
+            self._bg_size = (self.width, self.height)
+        cv.delete("dyn")
         self._hud_hits = []
-        self._draw_bg()
         self._draw_fills()
         self._draw_grid()
-        self._draw_labels()
+        if not self._dragging():
+            self._draw_labels()
         self._draw_stones(ts)
         self._draw_win(ts)
         self._draw_ghost()
@@ -762,16 +967,15 @@ class GomokuApp:
 
     def _draw_bg(self):
         cv = self.canvas
-        n = 64
+        n = 26
         h = self.height
         for i in range(n):
             t = i / (n - 1)
             base = mix(BOARD_A, BOARD_B, t)
             glow = max(0.0, 1 - abs(t - 0.42) / 0.62)
             col = mix(base, "#ffffff", glow * 0.55)
-            y0 = h * i / n
-            cv.create_rectangle(0, y0, self.width, h * (i + 1) / n + 1,
-                                fill=col, outline="")
+            cv.create_rectangle(0, h * i / n, self.width, h * (i + 1) / n + 1,
+                                fill=col, outline="", tags="bg")
 
     def _draw_fills(self):
         cv = self.canvas
@@ -781,30 +985,37 @@ class GomokuApp:
             if px > self.width or px + cs < 0 or py > self.height or py + cs < 0:
                 continue
             cv.create_rectangle(px + 1, py + 1, px + cs - 1, py + cs - 1,
-                                fill=mix(WIN_C, BOARD_A, 0.88), outline="")
+                                fill=mix(WIN_C, BOARD_A, 0.88), outline="",
+                                tags="dyn")
         if self.hover and self._can_place():
-            hx = int(self.wx(self.hover[0]) // 1)
-            hy = int(self.wy(self.hover[1]) // 1)
+            hx = int(math.floor(self.wx(self.hover[0])))
+            hy = int(math.floor(self.wy(self.hover[1])))
             if self.board.is_empty(hx, hy):
                 px, py = self.sx(hx), self.sy(hy)
                 cv.create_rectangle(px + 1, py + 1, px + cs - 1, py + cs - 1,
-                                    fill=mix(INFO, BOARD_A, 0.93), outline="")
+                                    fill=mix(INFO, BOARD_A, 0.93), outline="",
+                                    tags="dyn")
 
     def _draw_grid(self):
         cv = self.canvas
         cs = self.cs()
-        x0 = int((0 - self.view["x"]) // cs) - 1
-        x1 = int((self.width - self.view["x"]) // cs) + 2
-        y0 = int((0 - self.view["y"]) // cs) - 1
-        y1 = int((self.height - self.view["y"]) // cs) + 2
+        step = 1 if cs >= 15 else 5
+        x0 = int(math.floor((0 - self.view["x"]) / cs)) - 1
+        x1 = int(math.ceil((self.width - self.view["x"]) / cs)) + 1
+        y0 = int(math.floor((0 - self.view["y"]) / cs)) - 1
+        y1 = int(math.ceil((self.height - self.view["y"]) / cs)) + 1
         for x in range(x0, x1 + 1):
+            if step > 1 and x % 5 and x != 0:
+                continue
             px = round(self.sx(x)) + 0.5
             col = GRID_AX if x == 0 else (GRID_5 if x % 5 == 0 else GRID_1)
-            cv.create_line(px, 0, px, self.height, fill=col)
+            cv.create_line(px, 0, px, self.height, fill=col, tags="dyn")
         for y in range(y0, y1 + 1):
+            if step > 1 and y % 5 and y != 0:
+                continue
             py = round(self.sy(y)) + 0.5
             col = GRID_AX if y == 0 else (GRID_5 if y % 5 == 0 else GRID_1)
-            cv.create_line(0, py, self.width, py, fill=col)
+            cv.create_line(0, py, self.width, py, fill=col, tags="dyn")
 
     def _draw_labels(self):
         cs = self.cs()
@@ -812,26 +1023,24 @@ class GomokuApp:
             return
         cv = self.canvas
         col = mix(DIM, BOARD_A, 0.30)
-        x0 = int((0 - self.view["x"]) // cs)
-        x1 = int((self.width - self.view["x"]) // cs)
-        y0 = int((0 - self.view["y"]) // cs)
-        y1 = int((self.height - self.view["y"]) // cs)
-        start = (x0 // 5) * 5
-        for x in range(start, x1 + 1, 5):
+        x0 = int(math.floor((0 - self.view["x"]) / cs))
+        x1 = int(math.floor((self.width - self.view["x"]) / cs))
+        y0 = int(math.floor((0 - self.view["y"]) / cs))
+        y1 = int(math.floor((self.height - self.view["y"]) / cs))
+        for x in range((x0 // 5) * 5, x1 + 1, 5):
             if x == 0:
                 continue
             px = self.sx(x) + cs / 2
             if 30 < px < self.width - 30:
                 cv.create_text(px, 9, text=coord(x), fill=col,
-                               font=self.F_TINY, anchor="n")
-        start = (y0 // 5) * 5
-        for y in range(start, y1 + 1, 5):
+                               font=self.F_TINY, anchor="n", tags="dyn")
+        for y in range((y0 // 5) * 5, y1 + 1, 5):
             if y == 0:
                 continue
             py = self.sy(y) + cs / 2
             if 30 < py < self.height - 30:
                 cv.create_text(9, py, text=coord(y), fill=col,
-                               font=self.F_TINY, anchor="w")
+                               font=self.F_TINY, anchor="w", tags="dyn")
 
     def _mark(self, cx, cy, mark, cs, color, scale=1.0, glow=False):
         cv = self.canvas
@@ -841,25 +1050,27 @@ class GomokuApp:
             if glow:
                 soft = mix(color, BOARD_A, 0.72)
                 cv.create_line(cx - half, cy - half, cx + half, cy + half,
-                               fill=soft, width=w + 6, capstyle=tk.ROUND)
+                               fill=soft, width=w + 6, capstyle=tk.ROUND, tags="dyn")
                 cv.create_line(cx + half, cy - half, cx - half, cy + half,
-                               fill=soft, width=w + 6, capstyle=tk.ROUND)
+                               fill=soft, width=w + 6, capstyle=tk.ROUND, tags="dyn")
             cv.create_line(cx - half, cy - half, cx + half, cy + half,
-                           fill=color, width=w, capstyle=tk.ROUND)
+                           fill=color, width=w, capstyle=tk.ROUND, tags="dyn")
             cv.create_line(cx + half, cy - half, cx - half, cy + half,
-                           fill=color, width=w, capstyle=tk.ROUND)
+                           fill=color, width=w, capstyle=tk.ROUND, tags="dyn")
         else:
             w = max(2, cs * 0.09 * scale)
             if glow:
-                soft = mix(color, BOARD_A, 0.72)
                 cv.create_oval(cx - half, cy - half, cx + half, cy + half,
-                               outline=soft, width=w + 6)
+                               outline=mix(color, BOARD_A, 0.72), width=w + 6,
+                               tags="dyn")
             cv.create_oval(cx - half, cy - half, cx + half, cy + half,
-                           outline=color, width=w)
+                           outline=color, width=w, tags="dyn")
 
     def _draw_stones(self, ts):
         cs = self.cs()
         pad = cs * 1.2
+        glow_ok = cs >= 20
+        last = self.last_move[:2] if self.last_move else None
         for x, y, p in self.board.move_history:
             cx = self.sx(x) + cs / 2
             cy = self.sy(y) + cs / 2
@@ -870,47 +1081,43 @@ class GomokuApp:
             if born is not None:
                 age = ts - born
                 if 0 <= age < 0.23:
-                    t = age / 0.23
-                    e = 1 - (1 - t) ** 3
+                    e = 1 - (1 - age / 0.23) ** 3
                     scale = 0.62 + 0.38 * e
                     alpha = e
                 elif age >= 0.23:
                     self.anim.pop((x, y), None)
-            is_last = self.last_move and self.last_move[:2] == (x, y)
+            is_last = last == (x, y)
             base = LAST_C if is_last else (X_COLOR if p == PLAYER_X else O_COLOR)
             col = mix(base, BOARD_A, 1 - alpha)
-            self._mark(cx, cy, p, cs, col, scale, glow=bool(is_last))
+            self._mark(cx, cy, p, cs, col, scale, glow=is_last and glow_ok)
 
     def _draw_win(self, ts):
         if not self.win_line:
             return
         cs = self.cs()
-        t = max(0.0, min(1.0, (ts - self.win_start) / 0.43))
+        t = (ts - self.win_start) / 0.43
+        t = 0.0 if t < 0 else (1.0 if t > 1 else t)
         e = 1 - (1 - t) ** 3
         x1, y1 = self.win_line[0]
         x2, y2 = self.win_line[-1]
-        ax = self.sx(x1) + cs / 2
-        ay = self.sy(y1) + cs / 2
-        bx = self.sx(x2) + cs / 2
-        by = self.sy(y2) + cs / 2
+        ax, ay = self.sx(x1) + cs / 2, self.sy(y1) + cs / 2
+        bx, by = self.sx(x2) + cs / 2, self.sy(y2) + cs / 2
         dx, dy = bx - ax, by - ay
-        ln = (dx * dx + dy * dy) ** 0.5 or 1
+        ln = math.hypot(dx, dy) or 1
         over = cs * 0.3
-        sx = ax - dx / ln * over
-        sy = ay - dy / ln * over
-        fx = ax + dx * e + dx / ln * over * e
-        fy = ay + dy * e + dy / ln * over * e
+        sx, sy = ax - dx / ln * over, ay - dy / ln * over
+        fx, fy = ax + dx * e + dx / ln * over * e, ay + dy * e + dy / ln * over * e
         cv = self.canvas
         cv.create_line(sx, sy, fx, fy, fill=mix(WIN_C, BOARD_A, 0.80),
-                       width=max(10, cs * 0.34), capstyle=tk.ROUND)
-        cv.create_line(sx, sy, fx, fy, fill=WIN_C,
-                       width=max(2, cs * 0.055), capstyle=tk.ROUND)
+                       width=max(10, cs * 0.34), capstyle=tk.ROUND, tags="dyn")
+        cv.create_line(sx, sy, fx, fy, fill=WIN_C, width=max(2, cs * 0.055),
+                       capstyle=tk.ROUND, tags="dyn")
 
     def _draw_ghost(self):
-        if not self.hover or not self._can_place():
+        if not self.hover or not self._can_place() or self._dragging():
             return
-        hx = int(self.wx(self.hover[0]) // 1)
-        hy = int(self.wy(self.hover[1]) // 1)
+        hx = int(math.floor(self.wx(self.hover[0])))
+        hy = int(math.floor(self.wy(self.hover[1])))
         if not self.board.is_empty(hx, hy):
             return
         cs = self.cs()
@@ -921,116 +1128,112 @@ class GomokuApp:
 
     # ------------------------------------------------------- HUD
 
-    def _pill(self, x, y, text, fg, anchor="w", border=None, font=None):
-        font = font or self.F_TINY
-        tw = font.measure(text)
-        w = tw + 20
+    def _pill(self, x, y, text, fg, anchor="w", border=None):
+        w = measure(self.F_TINY, text) + 20
         h = 24
         x0 = x if anchor == "w" else x - w
-        cv = self.canvas
-        round_rect(cv, x0, y, x0 + w, y + h, 12,
-                   fill=mix(PANEL, BOARD_A, 0.12),
-                   outline=border or LINE, width=1)
-        cv.create_text(x0 + 10, y + h / 2, text=text, fill=fg,
-                       font=font, anchor="w")
-        return x0, y, x0 + w, y + h
+        round_rect(self.canvas, x0, y, x0 + w, y + h, 12,
+                   fill=mix(PANEL, BOARD_A, 0.12), outline=border or LINE,
+                   width=1, tags="dyn")
+        self.canvas.create_text(x0 + 10, y + h / 2, text=text, fill=fg,
+                                font=self.F_TINY, anchor="w", tags="dyn")
 
-    def _hud_button(self, x0, y0, w, h, text, action, font=None, fg=None):
-        cv = self.canvas
-        hot = self.hover and x0 <= self.hover[0] <= x0 + w and y0 <= self.hover[1] <= y0 + h
-        round_rect(cv, x0, y0, x0 + w, y0 + h, 10,
+    def _hud_button(self, x0, y0, w, h, text, action, font=None, idx=0):
+        hot = self._hover_key is not None and self._hover_key[2] == idx
+        round_rect(self.canvas, x0, y0, x0 + w, y0 + h, 10,
                    fill=PANEL if hot else mix(PANEL, BOARD_A, 0.18),
-                   outline=ACCENT if hot else LINE_HI, width=1)
-        cv.create_text(x0 + w / 2, y0 + h / 2, text=text,
-                       fill=(ACCENT if hot else (fg or MUTED)),
-                       font=font or self.F_UI, anchor="center")
+                   outline=ACCENT if hot else LINE_HI, width=1, tags="dyn")
+        self.canvas.create_text(x0 + w / 2, y0 + h / 2, text=text,
+                                fill=ACCENT if hot else MUTED,
+                                font=font or self.F_UI, anchor="center", tags="dyn")
         self._hud_hits.append((x0, y0, x0 + w, y0 + h, action))
 
     def _draw_hud(self):
         cv = self.canvas
-        cx = int(self.wx(self.width / 2) // 1)
-        cy = int(self.wy(self.height / 2) // 1)
+        cx = int(math.floor(self.wx(self.width / 2)))
+        cy = int(math.floor(self.wy(self.height / 2)))
         self._pill(14, 12, "поле ∞ · %s : %s" % (coord(cx), coord(cy)), MUTED)
         if self.last_move:
             lx, ly, lp = self.last_move
-            txt = "последний: %s · %s : %s" % (player_name(lp), coord(lx), coord(ly))
-            self._pill(self.width - 14, 12, txt, LAST_C, anchor="e",
-                       border=mix(LAST_C, PANEL, 0.55))
+            self._pill(self.width - 14, 12,
+                       "последний: %s · %s : %s" % (player_name(lp), coord(lx), coord(ly)),
+                       LAST_C, anchor="e", border=mix(LAST_C, PANEL, 0.55))
         else:
             self._pill(self.width - 14, 12, "последний ход —", DIM, anchor="e")
 
         if self.finished and self.result is not None:
-            title = "ПОБЕДА!"
             n = self.x_count()
             who = self.name_of(self.result)
-            if self.mode == "pvp":
-                sub = "%s собрал пять · за %d %s" % (who, n, plural(n, "ход", "хода", "ходов"))
-            elif self.result == self.human_mark:
-                sub = "Вы собрали пять · за %d %s" % (n, plural(n, "ход", "хода", "ходов"))
-            else:
-                sub = "%s собрал пять · за %d %s" % (who, n, plural(n, "ход", "хода", "ходов"))
-            w = max(280, self.F_BANS.measure(sub) + 56)
+            tail = "за %d %s" % (n, plural(n, "ход", "хода", "ходов"))
+            sub = ("Вы собрали пять · " + tail) if (
+                self.mode == "ai" and self.result == self.human_mark) else (
+                "%s собрал пять · %s" % (who, tail))
+            w = max(280, measure(self.F_BANS, sub) + 56)
             h = 74
             x0 = (self.width - w) / 2
             y0 = 52
             round_rect(cv, x0, y0 + 4, x0 + w, y0 + h + 4, 16,
-                       fill=mix(BANNER_BR, BOARD_B, 0.72), outline="")
+                       fill=mix(BANNER_BR, BOARD_B, 0.72), outline="", tags="dyn")
             round_rect(cv, x0, y0, x0 + w, y0 + h, 16,
-                       fill=BANNER_BG, outline=BANNER_BR, width=2)
-            cv.create_text(self.width / 2, y0 + 26, text=title,
-                           fill=BANNER_T, font=self.F_BAN)
+                       fill=BANNER_BG, outline=BANNER_BR, width=2, tags="dyn")
+            cv.create_text(self.width / 2, y0 + 26, text="ПОБЕДА!",
+                           fill=BANNER_T, font=self.F_BAN, tags="dyn")
             cv.create_text(self.width / 2, y0 + 54, text=sub,
-                           fill=DANGER, font=self.F_BANS)
+                           fill=DANGER, font=self.F_BANS, tags="dyn")
 
-        bw, bh, gap = 36, 32, 6
-        zw = 58
+        bw, bh, gap, zw = 36, 32, 6, 58
         total = bw * 3 + zw + gap * 3
         x = (self.width - total) / 2
         y = self.height - 14 - bh
         self._hud_button(x, y, bw, bh, "−",
-                         lambda: self.set_zoom_at(self.view["zoom"] / 1.18))
+                         lambda: self.set_zoom_at(self.view["zoom"] / 1.18), idx=1)
         x += bw + gap
         self._hud_button(x, y, zw, bh, "%d%%" % round(self.view["zoom"] * 100),
-                         lambda: self.set_zoom_at(1.0), font=self.F_SMALL)
+                         lambda: self.set_zoom_at(1.0), font=self.F_SMALL, idx=2)
         x += zw + gap
         self._hud_button(x, y, bw, bh, "+",
-                         lambda: self.set_zoom_at(self.view["zoom"] * 1.18))
+                         lambda: self.set_zoom_at(self.view["zoom"] * 1.18), idx=3)
         x += bw + gap
-        self._hud_button(x, y, bw, bh, "⌖", self.center_last)
+        self._hud_button(x, y, bw, bh, "⌖", self.center_last, idx=4)
 
-        if self._hint_on and self.started:
+        if self._hint_on and self.started and not self._dragging():
             txt = "Тяните поле левой кнопкой · колесо — масштаб"
-            tw = self.F_TINY.measure(txt) + 22
+            tw = measure(self.F_TINY, txt) + 22
             x0 = (self.width - tw) / 2
             y0 = y - 32
             round_rect(cv, x0, y0, x0 + tw, y0 + 24, 12,
-                       fill=mix(PANEL, BOARD_A, 0.10), outline=LINE)
+                       fill=mix(PANEL, BOARD_A, 0.10), outline=LINE,
+                       width=1, tags="dyn")
             cv.create_text(self.width / 2, y0 + 12, text=txt, fill=INFO,
-                           font=self.F_TINY)
+                           font=self.F_TINY, tags="dyn")
 
     def _hit_hud(self, px, py):
-        for x0, y0, x1, y1, action in self._hud_hits:
+        for i, (x0, y0, x1, y1, action) in enumerate(self._hud_hits, 1):
             if x0 <= px <= x1 and y0 <= py <= y1:
-                return action
-        return None
+                return i, action
+        return 0, None
 
     # ------------------------------------------------------- ввод
 
     def _can_place(self):
         if not self.started or self.finished or self.thinking:
             return False
-        if self.mode == "pvp":
-            return True
-        return self.turn == self.human_mark
+        return True if self.mode == "pvp" else self.turn == self.human_mark
+
+    def _set_cursor(self, cur):
+        if cur != self._cursor:
+            self._cursor = cur
+            self.canvas.configure(cursor=cur)
 
     def _clear_hover(self):
         if self.hover is not None:
             self.hover = None
+            self._hover_key = None
             self.schedule()
 
     def _on_down(self, e):
         self.canvas.focus_set()
-        action = self._hit_hud(e.x, e.y)
+        _, action = self._hit_hud(e.x, e.y)
         if action:
             action()
             self.drag = None
@@ -1039,9 +1242,9 @@ class GomokuApp:
         self.hover = (e.x, e.y)
 
     def _on_move_drag(self, e):
-        if not self.drag:
-            return
         d = self.drag
+        if not d:
+            return
         if abs(e.x - d["sx"]) + abs(e.y - d["sy"]) > 5:
             d["moved"] = True
         if d["moved"]:
@@ -1049,24 +1252,27 @@ class GomokuApp:
             self.view["y"] += e.y - d["ly"]
             self.view_anim = None
             self.hover = None
+            self._hover_key = None
             self._hint_on = False
-            self.canvas.configure(cursor="fleur")
+            self._set_cursor("fleur")
         d["lx"], d["ly"] = e.x, e.y
         self.schedule()
 
     def _on_up(self, e):
         d = self.drag
         self.drag = None
-        self.canvas.configure(cursor="crosshair")
+        self._set_cursor("crosshair")
         if not d:
             return
         if not d["moved"]:
             self.tap(e.x, e.y)
         self.hover = (e.x, e.y)
+        self._hover_key = None
         self.schedule()
 
     def _on_pan_start(self, e):
         self.drag = {"sx": e.x, "sy": e.y, "lx": e.x, "ly": e.y, "moved": True}
+        self._set_cursor("fleur")
 
     def _on_pan_move(self, e):
         if not self.drag:
@@ -1079,17 +1285,25 @@ class GomokuApp:
         self.schedule()
 
     def _on_hover(self, e):
-        if self.drag and self.drag.get("moved"):
+        if self._dragging():
             return
+        idx, _ = self._hit_hud(e.x, e.y)
+        if idx:
+            key = (None, None, idx)
+        elif self._can_place():
+            key = (int(math.floor(self.wx(e.x))), int(math.floor(self.wy(e.y))), 0)
+        else:
+            key = (None, None, 0)
         self.hover = (e.x, e.y)
-        self.canvas.configure(cursor="hand2" if self._hit_hud(e.x, e.y)
-                              else "crosshair")
-        self.schedule()
+        self._set_cursor("hand2" if idx else "crosshair")
+        if key != self._hover_key:
+            self._hover_key = key
+            self.schedule()
 
     def _on_wheel(self, e):
-        steps = e.delta / 120.0
         self._hint_on = False
-        self.set_zoom_at(self.view["zoom"] * (1.16 ** steps), e.x, e.y)
+        self.set_zoom_at(self.view["zoom"] * (1.16 ** (e.delta / 120.0)), e.x, e.y)
+        return "break"
 
     def tap(self, px, py):
         if not self.started:
@@ -1103,8 +1317,8 @@ class GomokuApp:
             else:
                 self.note("Сейчас ход ИИ — нажмите «Ход ИИ — продолжить»")
             return
-        x = int(self.wx(px) // 1)
-        y = int(self.wy(py) // 1)
+        x = int(math.floor(self.wx(px)))
+        y = int(math.floor(self.wy(py)))
         if not self.board.is_empty(x, y):
             self.note("Клетка %s : %s уже занята" % (coord(x), coord(y)))
             return
@@ -1112,10 +1326,6 @@ class GomokuApp:
 
     def _on_key(self, e):
         if self._help_win or self._an_win or self._rec_win:
-            if e.keysym == "Escape":
-                for w in (self._help_win, self._an_win, self._rec_win):
-                    if w:
-                        w.destroy()
             return
         k = e.keysym
         step = BASE * 0.6
@@ -1128,31 +1338,44 @@ class GomokuApp:
         elif k == "Down":
             self.view["y"] -= step
         elif k in ("plus", "KP_Add", "equal"):
-            self.set_zoom_at(self.view["zoom"] * 1.18); return
+            self.set_zoom_at(self.view["zoom"] * 1.18)
+            return
         elif k in ("minus", "KP_Subtract"):
-            self.set_zoom_at(self.view["zoom"] / 1.18); return
+            self.set_zoom_at(self.view["zoom"] / 1.18)
+            return
         elif k in ("0", "Home"):
-            self.fit_to_moves(True); return
+            self.fit_to_moves(True)
+            return
         elif k in ("c", "C", "с", "С"):
-            self.center_last(); return
+            self.center_last()
+            return
         elif k in ("u", "U", "г", "Г") or (e.state & 4 and k.lower() == "z"):
-            self.undo(); return
+            self.undo()
+            return
         elif k in ("y", "Y", "н", "Н"):
-            self.redo(); return
+            self.redo()
+            return
         elif k in ("n", "N", "т", "Т"):
-            self.primary_action(); return
+            self.primary_action()
+            return
         elif k in ("question", "F1", "h", "H"):
-            self.open_help(); return
+            self.open_help()
+            return
         elif k == "1":
-            self.copy_analysis(); return
+            self.copy_analysis()
+            return
         elif k == "2":
-            self.copy_game(); return
+            self.copy_game()
+            return
         elif k == "3":
-            self.copy_all(); return
+            self.copy_all()
+            return
         elif k in ("a", "A", "ф", "Ф"):
-            self.open_analyses(); return
+            self.open_analyses()
+            return
         elif k in ("s", "S", "ы", "Ы"):
-            self.save_game(); return
+            self.save_game()
+            return
         else:
             return
         self.view_anim = None
@@ -1198,10 +1421,10 @@ class GomokuApp:
         self._sync()
 
     def primary_action(self):
-        if not self.started:
-            self.begin_game()
-        else:
+        if self.started:
             self.to_setup()
+        else:
+            self.begin_game()
 
     def _fresh(self):
         self.gen += 1
@@ -1219,6 +1442,7 @@ class GomokuApp:
         self.record_snapshot = None
         self.anim = {}
         self.hover = None
+        self._hover_key = None
         self.status_note = ""
 
     def begin_game(self):
@@ -1322,7 +1546,10 @@ class GomokuApp:
             except Exception as exc:
                 move, text, err = None, "", "%s: %s" % (type(exc).__name__, exc)
             dt = time.perf_counter() - t0
-            self.root.after(0, lambda: self.ai_done(gen, move, text, err, dt))
+            try:
+                self.root.after(0, lambda: self.ai_done(gen, move, text, err, dt))
+            except Exception:
+                pass
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1348,16 +1575,14 @@ class GomokuApp:
         self.start_ai()
 
     def finish(self, p, line):
-        self.finished = True
-        self.thinking = True
         self.gen += 1
+        self.finished = True
         self.thinking = False
         self.result = p
         self.turn = p
         self.win_line = line
         self.win_start = time.perf_counter()
         self.record_snapshot = json.loads(json.dumps(self.records))
-        total = len(self.board.move_history)
         if self.mode == "pvp":
             self._rec_win(self.name_of(p), self.x_count())
             self._rec_loss(self.name_of(other(p)))
@@ -1437,18 +1662,18 @@ class GomokuApp:
 
     def _sync(self):
         editing = not self.started
-        self.chip_x.update(self.name_of(PLAYER_X), self.turn == PLAYER_X and not self.finished, editing)
-        self.chip_o.update(self.name_of(PLAYER_O), self.turn == PLAYER_O and not self.finished, editing)
+        self.chip_x.set_state(self.name_of(PLAYER_X),
+                              self.turn == PLAYER_X and not self.finished, editing)
+        self.chip_o.set_state(self.name_of(PLAYER_O),
+                              self.turn == PLAYER_O and not self.finished, editing)
         self.swap_btn.set_enabled(editing)
-        self.pl_hint.configure(
-            text="Щёлкните по овалу — кто играет X" if editing
-            else "Состав фиксируется на всю партию")
+        self.pl_hint.configure(text="Щёлкните по овалу — кто играет X" if editing
+                               else "Состав фиксируется на всю партию")
         self.mode_ai.set_kind("toggle_on" if self.mode == "ai" else "toggle")
         self.mode_pvp.set_kind("toggle_on" if self.mode == "pvp" else "toggle")
         self.mode_ai.set_enabled(editing)
         self.mode_pvp.set_enabled(editing)
-
-        self.primary.set_text("Начать игру" if not self.started else "Новая игра")
+        self.primary.set_text("Новая игра" if self.started else "Начать игру")
         self.undo_btn.set_enabled(self.started and bool(self.board.move_history))
         self.redo_btn.set_enabled(self.started and bool(self.redo_stack))
         self.resume_btn.set_enabled(self.started and not self.finished
@@ -1470,22 +1695,18 @@ class GomokuApp:
             kick, text = "Сообщение", self.status_note
             bg, dot = mix(WARN, PANEL, 0.90), WARN
         elif not self.started:
-            kick = "Новая партия"
-            text = "Выберите, кто играет X, и начните игру"
+            kick, text = "Новая партия", "Выберите, кто играет X, и начните игру"
         elif self.finished and self.result is not None:
             who = self.name_of(self.result)
-            if self.mode == "pvp":
-                kick, text = "Победа", "%s собрал пять" % who
-                bg, dot = mix(WIN_C, PANEL, 0.90), WIN_C
-            elif self.result == self.human_mark:
-                kick, text = "Победа", "Вы собрали пять"
-                bg, dot = mix(WIN_C, PANEL, 0.90), WIN_C
-            else:
+            if self.mode == "ai" and self.result != self.human_mark:
                 kick, text = "Поражение", "%s собрал пять" % who
                 bg, dot = mix(DANGER, PANEL, 0.90), DANGER
+            else:
+                kick = "Победа"
+                text = "Вы собрали пять" if self.mode == "ai" else "%s собрал пять" % who
+                bg, dot = mix(WIN_C, PANEL, 0.90), WIN_C
         elif self.thinking:
-            kick = "Компьютер · %s" % player_name(self.ai_mark)
-            text = "Думает…"
+            kick, text = "Компьютер · %s" % player_name(self.ai_mark), "Думает…"
             bg, dot = mix(INFO, PANEL, 0.90), INFO
         elif self.mode == "pvp":
             kick = "Ход: %s" % self.name_of(self.turn)
@@ -1500,14 +1721,11 @@ class GomokuApp:
                     if total else "Соберите пять %s подряд" % player_name(self.human_mark))
             dot = X_COLOR if self.human_mark == PLAYER_X else O_COLOR
 
-        self.kicker.configure(text=kick.upper(), bg=bg)
-        self.status.configure(text=text, bg=bg)
-        self.moves_line.configure(bg=bg)
-        self.meta.configure(bg=bg)
-        self.sc.configure(highlightbackground=LINE)
-        for w in (self.sc, self.sci, self.kicker.master):
+        for w in (self.sc, self.sci, self.status_head, self.kicker, self.status,
+                  self.moves_line, self.meta, self.dot):
             w.configure(bg=bg)
-        self.dot.configure(bg=bg)
+        self.kicker.configure(text=kick.upper())
+        self.status.configure(text=text)
         self.dot.delete("all")
         self.dot.create_oval(1, 1, 9, 9, fill=dot, outline="")
 
@@ -1519,25 +1737,19 @@ class GomokuApp:
         win.configure(bg=PANEL)
         win.transient(self.root)
         win.geometry("%dx%d" % (w, h))
-        win.minsize(min(w, 520), min(h, 420))
+        win.minsize(min(w, 520), min(h, 400))
         x = self.root.winfo_rootx() + (self.root.winfo_width() - w) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - h) // 2
         win.geometry("+%d+%d" % (max(0, x), max(0, y)))
         win.grab_set()
         return win
 
-    def _scroller(self, parent):
-        frame = tk.Frame(parent, bg=PANEL)
-        sb = tk.Scrollbar(frame, orient="vertical", bg=SURF_HI, troughcolor=PANEL_HI,
-                          activebackground=ACCENT, highlightthickness=0, bd=0,
-                          relief="flat", elementborderwidth=0, width=12)
-        txt = tk.Text(frame, wrap="word", bg=PANEL, fg=TEXT, font=self.F_BODY,
-                      bd=0, highlightthickness=0, padx=18, pady=16,
-                      spacing1=2, spacing3=5, yscrollcommand=sb.set, cursor="arrow")
-        sb.configure(command=txt.yview)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
-        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        return frame, txt
+    @staticmethod
+    def _sb(parent, orient="vertical"):
+        return tk.Scrollbar(parent, orient=orient, bg=SURF_HI, troughcolor=PANEL_HI,
+                            activebackground=ACCENT, highlightthickness=0, bd=0,
+                            relief="flat", elementborderwidth=0,
+                            width=12 if orient == "vertical" else 11)
 
     def open_help(self):
         if self._help_win:
@@ -1545,15 +1757,30 @@ class GomokuApp:
             return
         win = self._modal("Правила игры", 720, 660)
         self._help_win = win
+
+        def close():
+            self._help_win = None
+            win.destroy()
+
         head = tk.Frame(win, bg=PANEL_HI)
         head.pack(fill=tk.X)
         tk.Label(head, text="Правила и управление", bg=PANEL_HI, fg=TEXT,
                  font=self.F_TITLE).pack(side=tk.LEFT, padx=18, pady=14)
-        Chip(head, "✕", win.destroy, "ghost", height=30, radius=15,
-             font=self.F_UI, parent_bg=PANEL_HI).pack(side=tk.RIGHT, padx=14)
-        frame, txt = self._scroller(win)
+        Chip(head, "✕", close, "ghost", height=30, radius=15,
+             font=self.F_UI, parent_bg=PANEL_HI, width=34).pack(side=tk.RIGHT,
+                                                                padx=14)
+
+        frame = tk.Frame(win, bg=PANEL)
         frame.pack(fill=tk.BOTH, expand=True)
-        txt.tag_configure("h2", font=self.F_H3, foreground=ACCENT, spacing1=12, spacing3=4)
+        sb = self._sb(frame)
+        txt = tk.Text(frame, wrap="word", bg=PANEL, fg=TEXT, font=self.F_BODY,
+                      bd=0, highlightthickness=0, padx=18, pady=16,
+                      spacing1=2, spacing3=5, yscrollcommand=sb.set, cursor="arrow")
+        sb.configure(command=txt.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        txt.tag_configure("h2", font=self.F_H3, foreground=ACCENT,
+                          spacing1=12, spacing3=4)
         txt.tag_configure("b", foreground=MUTED)
         txt.tag_configure("k", font=self.F_MONOB, foreground=TEXT)
         txt.tag_configure("warn", foreground=WARN, font=self.F_SMALL)
@@ -1575,15 +1802,11 @@ class GomokuApp:
         h2("Перед партией")
         p("В панели справа щёлкните по овалу игрока — так выбирается, кто играет "
           "крестиками. Ниже выбирается режим: «С компьютером» или «Два игрока». "
-          "Состав и режим доступны только до начала партии. Затем нажмите «Начать игру».")
+          "Состав и режим доступны только до начала партии.")
         h2("Ход и поле")
         p("Коснитесь свободной клетки левой кнопкой мыши. Зажав левую кнопку, "
-          "тяните поле — оно перемещается в окне. Колесо мыши меняет масштаб "
-          "относительно точки под курсором. Кнопки − / % / + / ⌖ внизу поля "
-          "дублируют масштаб и центрирование.")
-        h2("Два игрока")
-        p("X и O ходят по очереди на одном экране. Имена «Игрок 1» и «Игрок 2» "
-          "меняются местами тем же щелчком по овалу до старта.")
+          "тяните поле. Колесо меняет масштаб относительно точки под курсором. "
+          "Кнопки − / % / + / ⌖ внизу поля дублируют масштаб и центрирование.")
         h2("Счёт ходов")
         p("Строка «Ходов: N» считает ходы крестиков, а не полуходы. Общее число "
           "полуходов показано ниже мелким шрифтом вместе с последним ходом.")
@@ -1591,68 +1814,45 @@ class GomokuApp:
         kv("Начать игру", "запускает партию с выбранным составом. Во время партии "
                           "кнопка называется «Новая игра» и возвращает к настройке "
                           "состава, очищая поле.")
-        kv("Отменить ход", "снимает один последний полуход. Нажимайте подряд, чтобы "
-                           "дойти до самого начала партии. Работает и после победы: "
-                           "результат и статистика откатываются.")
-        kv("Вернуть ход", "возвращает снятые полуходы по одному, в обратном порядке. "
-                          "Список возврата очищается, как только сделан новый ход.")
-        kv("Ход ИИ — продолжить", "появляется активной, если после отмены или возврата "
-                                  "очередь за компьютером. Нажмите, чтобы партия "
-                                  "продолжилась с текущей позиции. Без этого шага "
-                                  "отмена не «отыгрывается» автоматически.")
+        kv("↶ Отменить", "снимает один последний полуход. Нажимайте подряд, чтобы "
+                         "дойти до самого начала партии. Работает и после победы: "
+                         "результат и статистика откатываются.")
+        kv("↷ Повторить", "возвращает снятые полуходы по одному. Список возврата "
+                          "очищается, как только сделан новый ход.")
+        kv("Ход ИИ — продолжить", "активна, если после отмены или возврата очередь "
+                                  "за компьютером. Нажмите, чтобы партия пошла "
+                                  "дальше с текущей позиции.")
         kv("Правила игры", "это окно.")
-        kv("Статистика", "таблица побед, поражений и лучшего числа ходов. Записи "
-                         "хранятся на этом устройстве.")
+        kv("Статистика", "победы, поражения и лучшее число ходов X. Записи хранятся "
+                         "на этом устройстве.")
         kv("⇄", "меняет игроков местами, то же, что щелчок по овалу.")
-        h2("Кнопки: отладка (временно на месте выбора силы ИИ)")
-        txt.insert("end", "Эти кнопки нужны для проверки движка и в итоговой версии "
-                          "будут скрыты.\n", "warn")
-        kv("Анализ 1", "копирует в буфер полный разбор последнего хода ИИ: шаги поиска, "
-                       "найденные угрозы, точки достройки, оценки. Нажимать сразу "
-                       "после хода компьютера, если он выглядит ошибочным.")
-        kv("Партия 2", "копирует список всех ходов в текстовом виде — удобно вставить "
-                       "в сообщение или сохранить как протокол.")
-        kv("Всё 3", "копирует разборы всех ходов ИИ подряд, с номерами и временем. "
-                    "Нажимать в конце партии для полного разбора.")
-        kv("Просмотр A", "открывает окно со списком ходов ИИ слева и полным анализом "
-                         "выбранного хода справа. Основной инструмент разбора: "
-                         "позволяет найти, на каком ходу оценка впервые стала плохой.")
-        kv("Сохранить S", "пишет JSON со всеми ходами, анализами и временем обдумывания. "
-                          "Этот файл можно загрузить как тестовую позицию.")
-        kv("Центр C", "наводит камеру на последний ход. Полезно, если компьютер "
-                      "сыграл далеко за пределами видимой области.")
+        h2("Кнопки: отладка")
+        txt.insert("end", "Нужны для проверки движка, в итоговой версии будут скрыты.\n",
+                   "warn")
+        kv("Анализ 1", "копирует разбор последнего хода ИИ: шаги поиска, угрозы, "
+                       "точки достройки, оценки. Нажимать сразу после хода компьютера.")
+        kv("Партия 2", "копирует список всех ходов текстом.")
+        kv("Всё 3", "копирует разборы всех ходов ИИ подряд, с номерами и временем.")
+        kv("Просмотр A", "окно со списком ходов ИИ и полным анализом выбранного хода. "
+                         "Основной инструмент: найти ход, где оценка впервые испортилась.")
+        kv("Сохранить S", "пишет JSON со всеми ходами, анализами и временем. "
+                          "Файл можно загрузить как тестовую позицию.")
+        kv("Центр C", "наводит камеру на последний ход.")
         h2("Клавиши")
         kv("стрелки", "сдвиг поля")
         kv("+ / −", "масштаб")
         kv("0 или Home", "вписать все камни в окно")
         kv("C", "центрировать на последнем ходе")
         kv("U или Ctrl+Z", "отменить ход")
-        kv("Y", "вернуть ход")
+        kv("Y", "повторить ход")
         kv("N", "начать / новая игра")
         kv("? или F1", "это окно")
         kv("1 / 2 / 3 / A / S", "отладочные действия")
         txt.configure(state="disabled")
-        Chip(win, "Понятно", win.destroy, "primary", height=40,
+        Chip(win, "Понятно", close, "primary", height=40,
              font=self.F_UI).pack(fill=tk.X, padx=18, pady=14)
-
-        def close():
-            self._help_win = None
-            win.destroy()
         win.protocol("WM_DELETE_WINDOW", close)
-        for b in win.winfo_children():
-            pass
         win.bind("<Escape>", lambda e: close())
-        self._help_close = close
-        win.after(50, lambda: None)
-        # кнопки закрытия используют ту же уборку
-        for child in win.winfo_children():
-            if isinstance(child, Chip):
-                child.command = close
-        head_children = [c for c in win.winfo_children() if isinstance(c, tk.Frame)]
-        if head_children:
-            for c in head_children[0].winfo_children():
-                if isinstance(c, Chip):
-                    c.command = close
 
     def open_analyses(self):
         if self._an_win:
@@ -1664,18 +1864,23 @@ class GomokuApp:
             return
         win = self._modal("Анализы ходов ИИ", 1000, 640)
         self._an_win = win
+
+        def close():
+            self._an_win = None
+            win.destroy()
+
         head = tk.Frame(win, bg=PANEL_HI)
         head.pack(fill=tk.X)
         tk.Label(head, text="Разбор ходов компьютера", bg=PANEL_HI, fg=TEXT,
                  font=self.F_TITLE).pack(side=tk.LEFT, padx=18, pady=12)
+        Chip(head, "✕", close, "ghost", height=30, radius=15, font=self.F_UI,
+             parent_bg=PANEL_HI, width=34).pack(side=tk.RIGHT, padx=14)
+
         body = tk.Frame(win, bg=PANEL)
         body.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
-
         left = tk.Frame(body, bg=PANEL)
         left.pack(side=tk.LEFT, fill=tk.Y)
-        lsb = tk.Scrollbar(left, orient="vertical", bg=SURF_HI, troughcolor=PANEL_HI,
-                           activebackground=ACCENT, highlightthickness=0, bd=0,
-                           relief="flat", width=11)
+        lsb = self._sb(left)
         lb = tk.Listbox(left, width=30, bg=PANEL_HI, fg=TEXT, font=self.F_MONO,
                         bd=0, highlightthickness=1, highlightbackground=LINE,
                         selectbackground=ACCENT, selectforeground="#ffffff",
@@ -1686,18 +1891,14 @@ class GomokuApp:
 
         right = tk.Frame(body, bg=PANEL)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
-        rsb = tk.Scrollbar(right, orient="vertical", bg=SURF_HI, troughcolor=PANEL_HI,
-                           activebackground=ACCENT, highlightthickness=0, bd=0,
-                           relief="flat", width=11)
+        rsb = self._sb(right)
+        hsb = self._sb(right, "horizontal")
         txt = tk.Text(right, wrap="none", bg=PANEL_HI, fg=TEXT, font=self.F_MONO,
                       bd=0, highlightthickness=1, highlightbackground=LINE,
-                      padx=12, pady=10, yscrollcommand=rsb.set, cursor="arrow")
-        hsb = tk.Scrollbar(right, orient="horizontal", bg=SURF_HI, troughcolor=PANEL_HI,
-                           activebackground=ACCENT, highlightthickness=0, bd=0,
-                           relief="flat", width=11)
+                      padx=12, pady=10, yscrollcommand=rsb.set,
+                      xscrollcommand=hsb.set, cursor="arrow")
         rsb.configure(command=txt.yview)
         hsb.configure(command=txt.xview)
-        txt.configure(xscrollcommand=hsb.set)
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
         rsb.pack(side=tk.RIGHT, fill=tk.Y)
         txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -1712,23 +1913,18 @@ class GomokuApp:
             sel = lb.curselection()
             if not sel:
                 return
-            r = recs[sel[0]]
             txt.configure(state="normal")
             txt.delete("1.0", "end")
-            txt.insert("end", r["analysis"])
+            txt.insert("end", recs[sel[0]]["analysis"])
             txt.configure(state="disabled")
 
         lb.bind("<<ListboxSelect>>", select)
         lb.selection_set(0)
         select()
-
-        def close():
-            self._an_win = None
-            win.destroy()
-        win.protocol("WM_DELETE_WINDOW", close)
-        win.bind("<Escape>", lambda e: close())
         Chip(win, "Закрыть", close, "secondary", height=36,
              font=self.F_SMALL).pack(fill=tk.X, padx=14, pady=(0, 12))
+        win.protocol("WM_DELETE_WINDOW", close)
+        win.bind("<Escape>", lambda e: close())
 
     def open_records(self):
         if self._rec_win:
@@ -1736,10 +1932,19 @@ class GomokuApp:
             return
         win = self._modal("Статистика", 620, 520)
         self._rec_win = win
+
+        def close():
+            self._rec_win = None
+            self._reset_armed = False
+            win.destroy()
+
         head = tk.Frame(win, bg=PANEL_HI)
         head.pack(fill=tk.X)
         tk.Label(head, text="Рекорды игроков", bg=PANEL_HI, fg=TEXT,
                  font=self.F_TITLE).pack(side=tk.LEFT, padx=18, pady=12)
+        Chip(head, "✕", close, "ghost", height=30, radius=15, font=self.F_UI,
+             parent_bg=PANEL_HI, width=34).pack(side=tk.RIGHT, padx=14)
+
         body = tk.Frame(win, bg=PANEL)
         body.pack(fill=tk.BOTH, expand=True, padx=16, pady=12)
         tk.Label(body, text="Победы, поражения и лучшее число ходов X, за которое "
@@ -1748,9 +1953,7 @@ class GomokuApp:
         box = tk.Frame(body, bg=PANEL_HI, highlightthickness=1,
                        highlightbackground=LINE)
         box.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
-        sb = tk.Scrollbar(box, orient="vertical", bg=SURF_HI, troughcolor=PANEL_HI,
-                          activebackground=ACCENT, highlightthickness=0, bd=0,
-                          relief="flat", width=11)
+        sb = self._sb(box)
         txt = tk.Text(box, height=10, bg=PANEL_HI, fg=TEXT, font=self.F_MONO,
                       bd=0, highlightthickness=0, padx=12, pady=10,
                       yscrollcommand=sb.set, cursor="arrow")
@@ -1764,9 +1967,9 @@ class GomokuApp:
 
         rows = sorted(self.records.items(),
                       key=lambda kv: (-kv[1]["wins"],
-                                      kv[1]["best"] if kv[1]["best"] else 10 ** 9,
-                                      kv[0]))
-        txt.insert("end", "%-3s %-22s %7s %9s %8s\n" % ("#", "Игрок", "Победы", "Пораж.", "Мин."), "hd")
+                                      kv[1]["best"] or 10 ** 9, kv[0]))
+        txt.insert("end", "%-3s %-22s %7s %9s %8s\n" %
+                   ("#", "Игрок", "Победы", "Пораж.", "Мин."), "hd")
         txt.insert("end", "─" * 54 + "\n", "hd")
         if not rows:
             txt.insert("end", "\nПока нет сыгранных партий.\n", "l")
@@ -1775,29 +1978,26 @@ class GomokuApp:
             txt.insert("end", "%-3d %-22s " % (i, nm))
             txt.insert("end", "%7d " % r["wins"], "w")
             txt.insert("end", "%9d " % r["losses"], "l")
-            txt.insert("end", "%8s\n" % (r["best"] if r["best"] else "—"), "bst")
+            txt.insert("end", "%8s\n" % (r["best"] or "—"), "bst")
         txt.configure(state="disabled")
 
         btns = tk.Frame(win, bg=PANEL)
         btns.pack(fill=tk.X, padx=16, pady=12)
 
-        def close():
-            self._rec_win = None
+        def disarm():
             self._reset_armed = False
-            win.destroy()
+            rb.set_text("Сбросить таблицу")
+            rb.set_kind("secondary")
 
         def reset():
             if not self._reset_armed:
                 self._reset_armed = True
                 rb.set_text("Точно сбросить?")
                 rb.set_kind("danger")
-                win.after(6000, lambda: (rb.set_text("Сбросить таблицу"),
-                                         rb.set_kind("secondary"),
-                                         setattr(self, "_reset_armed", False)))
+                win.after(6000, disarm)
                 return
             self.records = {}
             self._save_state()
-            self._reset_armed = False
             close()
             self.open_records()
 
