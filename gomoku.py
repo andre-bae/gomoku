@@ -1,6 +1,12 @@
-import tkinter as tk
-from tkinter import messagebox
-from tkinter import filedialog
+# GUI-библиотека нужна только старому отладочному интерфейсу.
+# Движок должен импортироваться и без неё: автотесты, самоигра, Android.
+try:
+    import tkinter as tk
+    from tkinter import messagebox, filedialog
+except ImportError:
+    tk = None
+    messagebox = None
+    filedialog = None
 from typing import Optional, List, Tuple, Dict
 import threading
 import json
