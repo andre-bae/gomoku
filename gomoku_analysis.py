@@ -120,15 +120,22 @@ def _scan_windows(vals: List[int], player: int, opponent: int):
 
 
 def _classify_three(vals: List[int], player: int, opponent: int,
-                    points: Set[int]) -> Tuple[str, Set[int]]:
-    """Симулируем ход в каждую пустую клетку тройки и смотрим, что получится."""
+                    points: Set[int], three_stones: Tuple[int, ...]) -> Tuple[str, Set[int]]:
+    """Достраиваем камень в каждую пустую клетку тройки.
+    Учитываем ТОЛЬКО четвёрки, содержащие все камни нашей тройки и новый камень,
+    иначе соседняя четвёрка на той же линии делает мёртвую тройку 'живой'."""
     live: Set[int] = set()
     sleeping: Set[int] = set()
+    base = set(three_stones)
     for i in sorted(points):
         vals[i] = player
         _, fours_after, _ = _scan_windows(vals, player, opponent)
         vals[i] = EMPTY
-        best = max((len(p) for p in fours_after.values()), default=0)
+        best = 0
+        for st, pts in fours_after.items():
+            s = set(st)
+            if i in s and base <= s:
+                best = max(best, len(pts))
         if best >= 2:
             live.add(i)
         elif best == 1:
@@ -179,7 +186,7 @@ def analyze_threats(board, player: int) -> List[Threat]:
                 # тройка, целиком лежащая внутри четвёрки/пятёрки, — не отдельная угроза
                 if set(st) <= four_stones or set(st) <= five_stones:
                     continue
-                kind, key_points = _classify_three(sv, player, opponent, pts)
+                kind, key_points = _classify_three(sv, player, opponent, pts, st)
                 if not kind:
                     continue
                 t = Threat(kind, player, direction,
