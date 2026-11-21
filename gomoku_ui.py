@@ -789,6 +789,7 @@ class GomokuApp:
         self.view["zoom"] = z
         self.view["x"] = px - wx * BASE * z
         self.view["y"] = py - wy * BASE * z
+        self.hover = None
         self.view_anim = None
         self._last_view = dict(self.view)
         self.schedule()
@@ -1090,7 +1091,15 @@ class GomokuApp:
 
     def _on_hover(self, e):
         if self._dragging(): return
-        self.hover = (e.x, e.y)
+        cs = self.cs()
+        hx = int(math.floor(self.wx(e.x)))
+        hy = int(math.floor(self.wy(e.y)))
+        if self.hover is not None:
+            ox = int(math.floor(self.wx(self.hover[0])))
+            oy = int(math.floor(self.wy(self.hover[1])))
+            if (hx, hy) == (ox, oy):
+                return
+        self.hover = (self.sx(hx) + cs / 2, self.sy(hy) + cs / 2)
         self.schedule()
 
     def _on_wheel(self, e):
