@@ -1072,14 +1072,22 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     mm_budget = [8000]
     tt = {}
     deadline = time.perf_counter() + POSITIONAL_TIME_LIMIT
-
+    ordered = _order_moves(board, player, candidates)
+    shortlist = [m for m, _ in ordered[:24]]
     scored = []
-    for x, y in candidates:
+    for x, y in shortlist:
+        if _time_up():
+            break
         board.make_move(x, y, player)
         score = evaluate_position(board, player, to_move=opponent)
         board.undo_move()
         scored.append(((x, y), score))
     scored.sort(key=lambda t: (-t[1], t[0]))
+    if not scored:
+        move = ordered[0][0]
+        log(f"  время вышло до оценки — берём {move}")
+        return move
+
     log("  Топ-10 кандидатов:")
     for (x, y), s in scored[:10]:
         log(f"    ({x},{y}) = {s}")
