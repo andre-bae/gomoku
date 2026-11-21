@@ -20,6 +20,21 @@ TT_MAX_ENTRIES = 200_000
 TT_EXACT, TT_LOWER, TT_UPPER = 0, 1, 2
 
 
+# --- Временные переключатели дорогих эвристик (сессия 1) ---
+ENABLE_POTENTIAL_FORK_SCAN = False        # шаг 6.5: перебор всех клеток
+ENABLE_THREAT_SCAN_AFTER_BLOCK = False    # скан угроз после каждого блока
+MOVE_TIME_LIMIT = 3.0                     # жёсткий лимит секунд на ход ИИ
+_MOVE_DEADLINE = 0.0                      # служебное: когда время истекает
+
+
+class SearchTimeout(Exception):
+    """Служебное исключение: время на ход закончилось."""
+
+
+def _time_up() -> bool:
+    return _MOVE_DEADLINE > 0.0 and time.perf_counter() > _MOVE_DEADLINE
+
+
 def _zobrist_key(x: int, y: int, player: int) -> int:
     """Детерминированный 64-битный ключ клетки без состояния RNG."""
     h = ((x * 0x9E3779B97F4A7C15) ^ (y * 0xBF58476D1CE4E5B9) ^
@@ -557,46 +572,21 @@ def find_vcf_defense(board: Board, player: int, depth: int = 12,
     verified.sort(key=lambda t: (t[0], -t[1], t[2]))
     return verified[0][2]
 
+
 def evaluate_threats_after_move(board: Board, player: int) -> Tuple[int, str]:
-    max_level = 0
-    threat_desc = "нет угроз"
-
-    for x, y in board.get_candidate_moves(radius=2):
-        if not board.is_empty(x, y):
-            continue
-
-        threats = get_potential_threats(board, x, y, player)
-
-        if 'five' in threats:
-            if max_level < 4:
-                max_level = 4
-                threat_desc = f"пятёрка в ({x},{y})"
-        if 'open_four' in threats:
-            if max_level < 3:
-                max_level = 3
-                threat_desc = f"открытая четвёрка в ({x},{y})"
-        if 'closed_four' in threats:
-            if max_level < 2:
-                max_level = 2
-                threat_desc = f"четвёрка (закрытая/с разрывом) в ({x},{y})"
-        if 'open_three' in threats:
-            if max_level < 1:
-                max_level = 1
-                threat_desc = f"открытая тройка в ({x},{y})"
-
-        board.make_move(x, y, player)
-        open_threes = count_all_open_threes(board, player)
-        board.undo_move()
-
-        if open_threes >= 2:
-            if max_level < 3:
-                max_level = 3
-                threat_desc = f"вилка в ({x},{y})"
-
-        if max_level >= 3:
-            break
-
-    return max_level, threat_desc
+    """Быстрая версия: несколько проходов анализатора вместо перебора всех клеток."""
+    if not ENABLE_THREAT_SCAN_AFTER_BLOCK:
+        return 0, "скан угроз отключён (быстрый режим)"
+    if completion_points(board, player):
+        return 4, "есть ход, собирающий пятёрку"
+    th = analyze_threats(board, player)
+    if any(t.kind == LIVE_FOUR for t in th) or is_double_threat_new(board, player):
+        return 3, "живая четвёрка или вилка"
+    if four_move_candidates(board, player):
+        return 2, "есть ход, создающий четвёрку"
+    if any(t.kind == LIVE_THREE for t in th) or threat_move_candidates(board, player):
+        return 1, "есть ход, создающий тройку"
+    return 0, "нет угроз"
 
 
 def block_open_three_threats(board: Board, player: int) -> Optional[Tuple[int, int]]:
@@ -730,8 +720,10 @@ def find_vct_defense(board: Board, player: int, depth: int = 4,
 
 
 def block_potential_fork(board: Board, player: int) -> Optional[Tuple[int, int]]:
-    fork_threat = find_potential_fork(board, player)
-    return fork_threat
+    if not ENABLE_POTENTIAL_FORK_SCAN:
+        log("  (шаг 6.5 отключён: слишком дорогой перебор клеток)")
+        return None
+    return find_potential_fork(board, player)
 
 
 def choose_resistance_move(board: Board, player: int) -> Tuple[int, int]:
