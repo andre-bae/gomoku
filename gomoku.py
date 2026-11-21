@@ -789,6 +789,20 @@ def _connectivity(board: Board, player: int) -> int:
     return total // 2
 
 
+def _unique_threats(threats):
+    """Одна угроза — один объект: тип + направление + точки достройки.
+    Пример дубля: OXXXX.X даёт два FOUR с одной и той же точкой (4,0)."""
+    seen = set()
+    out = []
+    for t in threats:
+        key = (t.kind, t.direction, t.points)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+    return out
+
+
 def evaluate_position(board: Board, player: int, to_move: Optional[int] = None) -> int:
     """
     Этап 5. Оценка по уникальным угрозам анализатора, без двойного учёта.
@@ -799,8 +813,8 @@ def evaluate_position(board: Board, player: int, to_move: Optional[int] = None) 
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
     WIN = 10_000_000
 
-    my_th = analyze_threats(board, player)
-    op_th = analyze_threats(board, opponent)
+    my_th = _unique_threats(analyze_threats(board, player))
+    op_th = _unique_threats(analyze_threats(board, opponent))
 
     if any(t.kind == FIVE for t in my_th):
         return WIN

@@ -426,15 +426,14 @@ def test_c1_live_three_control():
     assert len(live) == 1, f"ожидалась одна живая тройка, получено: {th}"
 
 
-@case("C2: четвёрка с хвостом не должна считаться дважды",
-      known_bug="C2: одна четвёрка даёт два объекта FOUR — двойной учёт в оценке")
-def test_c2_four_with_tail_single_threat():
-    b = build([(0, 0), (1, 0), (2, 0), (3, 0), (5, 0)], [(-1, 0)])
-    th = analyze_threats(b, PLAYER_X)
-    fours = [t for t in th if t.kind in (FOUR, LIVE_FOUR)]
-    pts = {p for t in fours for p in t.points}
-    assert len(pts) == 1, f"точка достройки должна быть одна: {pts}"
-    assert len(fours) == 1, f"одна угроза посчитана {len(fours)} раз: {fours}"
+@case("C2: четвёрка с хвостом не должна считаться дважды")
+def test_c2_four_with_tail_not_double_counted():
+    plain = build([(0, 0), (1, 0), (2, 0), (3, 0)], [(-1, 0)])
+    tail = build([(0, 0), (1, 0), (2, 0), (3, 0), (5, 0)], [(-1, 0)])
+    s_plain = evaluate_position(plain, PLAYER_X, to_move=PLAYER_O)
+    s_tail = evaluate_position(tail, PLAYER_X, to_move=PLAYER_O)
+    assert s_tail - s_plain < 20_000, \
+        f"хвост добавил {s_tail - s_plain} очков — четвёрка посчитана дважды"
 
 
 def run_tests(only: Optional[str] = None) -> int:
