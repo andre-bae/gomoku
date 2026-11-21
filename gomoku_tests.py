@@ -23,7 +23,7 @@ from gomoku import (
 
 from gomoku_analysis import (
     analyze_threats, is_double_threat_new, LIVE_THREE, LIVE_FOUR,
-    window_potential,
+    window_potential, FOUR,
 )
 
 
@@ -408,6 +408,34 @@ def test_eval_penalizes_opponent_potential():
 
 
 # ---------- раннер и утилиты ----------
+
+@case("C1: мёртвая тройка рядом с живой четвёркой остаётся мёртвой")
+def test_c1_dead_three_near_live_four():
+    b = build([(0, 0), (1, 0), (2, 0), (3, 0), (8, 0), (9, 0), (10, 0)], [(11, 0)])
+    th = analyze_threats(b, PLAYER_X)
+    assert any(t.kind == LIVE_FOUR for t in th), "живая четвёрка должна быть найдена"
+    bad = [t for t in th if t.kind == LIVE_THREE and t.stones == ((8, 0), (9, 0), (10, 0))]
+    assert not bad, f"тройка (8,9,10) мёртвая, но объявлена живой: {bad}"
+
+
+@case("C1: та же тройка без соседней четвёрки — живая")
+def test_c1_live_three_control():
+    b = build([(8, 0), (9, 0), (10, 0)], [])
+    th = analyze_threats(b, PLAYER_X)
+    live = [t for t in th if t.kind == LIVE_THREE and t.stones == ((8, 0), (9, 0), (10, 0))]
+    assert len(live) == 1, f"ожидалась одна живая тройка, получено: {th}"
+
+
+@case("C2: четвёрка с хвостом не должна считаться дважды",
+      known_bug="C2: одна четвёрка даёт два объекта FOUR — двойной учёт в оценке")
+def test_c2_four_with_tail_single_threat():
+    b = build([(0, 0), (1, 0), (2, 0), (3, 0), (5, 0)], [(-1, 0)])
+    th = analyze_threats(b, PLAYER_X)
+    fours = [t for t in th if t.kind in (FOUR, LIVE_FOUR)]
+    pts = {p for t in fours for p in t.points}
+    assert len(pts) == 1, f"точка достройки должна быть одна: {pts}"
+    assert len(fours) == 1, f"одна угроза посчитана {len(fours)} раз: {fours}"
+
 
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
