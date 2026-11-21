@@ -294,6 +294,9 @@ def search_vcf(board: Board, depth: int, player: int, is_attacking: bool,
             return None
         budget[0] -= 1
 
+    if _time_up():
+        raise SearchTimeout
+
     attacker = player if is_attacking else (PLAYER_O if player == PLAYER_X else PLAYER_X)
     defender = PLAYER_O if attacker == PLAYER_X else PLAYER_X
     ind = "  " * indent
@@ -376,6 +379,9 @@ def search_vct(board: Board, depth: int, player: int, is_attacking: bool,
         if budget[0] <= 0:
             return None
         budget[0] -= 1
+
+    if _time_up():
+        raise SearchTimeout
 
     attacker = player if is_attacking else (PLAYER_O if player == PLAYER_X else PLAYER_X)
     defender = PLAYER_O if attacker == PLAYER_X else PLAYER_X
@@ -887,6 +893,9 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
             return evaluate_position(board, player, to_move=current)
         budget[0] -= 1
 
+    if _time_up():
+        raise SearchTimeout
+
     if check_five(board, PLAYER_X):
         return 10_000_000 if player == PLAYER_X else -10_000_000
     if check_five(board, PLAYER_O):
@@ -950,7 +959,7 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
     return best
 
 
-def get_best_move(board: Board, player: int) -> Tuple[int, int]:
+def _get_best_move_impl(board: Board, player: int) -> Tuple[int, int]:
     DEBUG_LOG.clear()
     log(f"=== Ход ИИ ({player_name(player)}) ===")
     log("Доска:")
@@ -1122,6 +1131,27 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     log(f"  -> ВЫБРАН: {best_move}")
     log(f"\n=== Финальный ход: {best_move} ===")
     return best_move
+
+
+def get_best_move(board: Board, player: int) -> Tuple[int, int]:
+    """Обёртка: жёсткий лимит времени на ход и гарантия восстановления доски."""
+    global _MOVE_DEADLINE
+    base_len = len(board.move_history)
+    t0 = time.perf_counter()
+    _MOVE_DEADLINE = t0 + MOVE_TIME_LIMIT
+    try:
+        return _get_best_move_impl(board, player)
+    except SearchTimeout:
+        while len(board.move_history) > base_len:
+            board.undo_move()
+        log("  !! время хода исчерпано — быстрый выбор по сортировке")
+        cands = board.get_candidate_moves(radius=1) or [(0, 0)]
+        return _order_moves(board, player, cands)[0][0]
+    finally:
+        _MOVE_DEADLINE = 0.0
+        while len(board.move_history) > base_len:
+            board.undo_move()
+        log(f"Время хода ИИ: {time.perf_counter() - t0:.2f} с")
 
 
 class GomokuGUI:
