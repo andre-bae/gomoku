@@ -1306,78 +1306,78 @@ class GomokuApp:
         r = self.records.setdefault(name, {"wins": 0, "losses": 0, "best": None})
         r["losses"] += 1
 
+
     def undo(self):
         if not self.started or not self.board.move_history: return
+        if self.mode == "ai" and not any(
+                p == self.human_mark for _, _, p in self.board.move_history):
+            return                      # ходов человека ещё нет — отменять нечего
         self.gen += 1
         self.thinking = False
         was_finished = self.finished
-        if self.mode == "pvp":
+
+        def pop_one():
             x, y, p = self.board.undo_move()
             rec = self.move_records.pop() if self.move_records else None
             if self.game_log: self.game_log.pop()
             self.redo_stack.append({"move": (x, y, p), "rec": rec})
-            self.turn = p
+
+        if self.mode == "pvp":
+            pop_one()
         else:
             if self.board.move_history[-1][2] == self.ai_mark:
-                x, y, p = self.board.undo_move()
-                rec = self.move_records.pop() if self.move_records else None
-                if self.game_log: self.game_log.pop()
-                self.redo_stack.append({"move": (x, y, p), "rec": rec})
+                pop_one()
             if self.board.move_history and self.board.move_history[-1][2] == self.human_mark:
-                x, y, p = self.board.undo_move()
-                rec = self.move_records.pop() if self.move_records else None
-                if self.game_log: self.game_log.pop()
-                self.redo_stack.append({"move": (x, y, p), "rec": rec})
-                self.turn = p
+                pop_one()
+
         self.finished = False
         self.result = None
         self.win_line = []
         self.last_move = self.board.move_history[-1] if self.board.move_history else None
+        self.turn = PLAYER_X if len(self.board.move_history) % 2 == 0 else PLAYER_O
         if was_finished and self.record_snapshot is not None:
             self.records = self.record_snapshot
             self.record_snapshot = None
             self._save_state()
         self._sync()
         self.schedule()
+        if self.mode == "ai" and self.turn == self.ai_mark:
+            self.start_ai()
+
 
     def redo(self):
         if not self.started or not self.redo_stack: return
         self.gen += 1
         self.thinking = False
-        if self.mode == "pvp":
+
+        def push_one():
             item = self.redo_stack.pop()
             x, y, p = item["move"]
             rec = item["rec"] or {}
-            if not self.place(x, y, p, rec.get("analysis", ""), rec.get("elapsed")): return
-            line = self.winner_line(x, y, p)
-            if line:
-                self.finish(p, line)
-                return
-            self.turn = other(p)
-        else:
-            if self.redo_stack and self.redo_stack[-1]["move"][2] == self.human_mark:
-                item = self.redo_stack.pop()
-                x, y, p = item["move"]
-                rec = item["rec"] or {}
-                if not self.place(x, y, p, rec.get("analysis", ""), rec.get("elapsed")): return
-                if self.redo_stack and self.redo_stack[-1]["move"][2] == self.ai_mark:
-                    item = self.redo_stack.pop()
-                    x, y, p = item["move"]
-                    rec = item["rec"] or {}
-                    if not self.place(x, y, p, rec.get("analysis", ""), rec.get("elapsed")): return
-                    line = self.winner_line(x, y, p)
-                    if line:
-                        self.finish(p, line)
-                        return
-                    self.turn = self.human_mark
-                else:
-                    self.turn = self.ai_mark
-                    self.start_ai()
+            if not self.place(x, y, p, rec.get("analysis", ""), rec.get("elapsed")):
+                return None
+            return (x, y, p)
+
+        m = push_one()
+        if m is None: return
+        if self.mode == "ai" and m[2] == self.human_mark and self.redo_stack and \
+                self.redo_stack[-1]["move"][2] == self.ai_mark:
+            if push_one() is None: return    # возвращаем и ответ ИИ
+
         self.finished = False
         self.result = None
         self.win_line = []
+        self.turn = PLAYER_X if len(self.board.move_history) % 2 == 0 else PLAYER_O
+        x, y, p = self.board.move_history[-1]
+        line = self.winner_line(x, y, p)
+        if line:
+            self.finish(p, line)
+            return
         self._sync()
         self.schedule()
+        if self.mode == "ai" and self.turn == self.ai_mark:
+            self.start_ai()
+
 
     # ------------------------------------------------------- синхронизация
     def _sync(self):
@@ -1392,7 +1392,10 @@ class GomokuApp:
         self.mode_ai.set_enabled(editing)
         self.mode_pvp.set_enabled(editing)
         self.primary.set_text("Новая игра" if self.started else "Начать игру")
-        self.undo_btn.set_enabled(self.started and bool(self.board.move_history))
+        can_undo = self.started and bool(self.board.move_history)
+        if can_undo and self.mode == "ai":
+            can_undo = any(p == self.human_mark for _, _, p in self.board.move_history)
+        self.undo_btn.set_enabled(can_undo)
         self.redo_btn.set_enabled(self.started and bool(self.redo_stack))
         n = self.x_count()
         self.moves_line.configure(text="Ходов: %d" % n)
