@@ -451,6 +451,26 @@ def test_c4_fork_allowed_without_defender_vcf():
     assert find_own_fork(b, PLAYER_X) == (0, 0)
 
 
+@case("C3/C5: обрыв поиска отмечается и не отравляет кэш VCT")
+def test_truncation_marked_and_tt_clean():
+    import gomoku
+    b = build([(1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10)])
+    gomoku._TRUNCATED[0] = 0
+    tt = {}
+    search_vct(b, depth=4, player=PLAYER_X, is_attacking=True, budget=[1], tt=tt)
+    assert gomoku._TRUNCATED[0] > 0, "обрыв по бюджету должен быть отмечен"
+    assert None not in tt.values(), f"в кэш попал недоказанный «победы нет»: {tt}"
+
+
+@case("C3: счётчик обрывов сбрасывается в начале хода ИИ")
+def test_truncation_counter_reset():
+    import gomoku
+    gomoku._TRUNCATED[0] = 99
+    b = build([(0, 0), (1, 0), (2, 0)], [(10, 10)])
+    get_best_move(b, PLAYER_X)
+    assert gomoku._TRUNCATED[0] < 99, "счётчик должен обнуляться в обёртке get_best_move"
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)

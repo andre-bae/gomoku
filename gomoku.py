@@ -31,6 +31,7 @@ ENABLE_POTENTIAL_FORK_SCAN = False        # шаг 6.5: перебор всех 
 ENABLE_THREAT_SCAN_AFTER_BLOCK = False    # скан угроз после каждого блока
 MOVE_TIME_LIMIT = 3.0                     # жёсткий лимит секунд на ход ИИ
 _MOVE_DEADLINE = 0.0                      # служебное: когда время истекает
+_TRUNCATED = [0]                          # счётчик обрывов поиска: >0 = бюджет исчерпан
 
 
 class SearchTimeout(Exception):
@@ -293,12 +294,14 @@ def search_vcf(board: Board, depth: int, player: int, is_attacking: bool,
     Выигрыш засчитывается только если ПРОИГРЫВАЮТ ВСЕ защиты.
     Терминальные позиции проверяются до отсечения по глубине.
     """
-    if path is None:
-        path = []
     if budget is not None:
         if budget[0] <= 0:
+            _TRUNCATED[0] += 1
             return None
         budget[0] -= 1
+
+    if path is None:
+        path = []
 
     if _time_up():
         raise SearchTimeout
@@ -381,8 +384,10 @@ def search_vct(board: Board, depth: int, player: int, is_attacking: bool,
     """
     if path is None:
         path = []
+
     if budget is not None:
         if budget[0] <= 0:
+            _TRUNCATED[0] += 1
             return None
         budget[0] -= 1
 
@@ -418,6 +423,7 @@ def search_vct(board: Board, depth: int, player: int, is_attacking: bool,
     result = None
     for move in moves:
         if budget is not None and budget[0] <= 0:
+            _TRUNCATED[0] += 1
             break
         board.make_move(move[0], move[1], attacker)
         tag = f"{player_name(attacker)}{move}"
@@ -467,6 +473,7 @@ def search_vct(board: Board, depth: int, player: int, is_attacking: bool,
         all_parries_lose = True
         for d in sorted(parries):
             if budget is not None and budget[0] <= 0:
+                _TRUNCATED[0] += 1
                 all_parries_lose = False
                 break
             board.make_move(d[0], d[1], defender)
@@ -484,7 +491,9 @@ def search_vct(board: Board, depth: int, player: int, is_attacking: bool,
             break
 
     if tt is not None and key is not None:
-        tt[key] = result
+        # C5: «победы нет» при оборванном поиске — не доказательство, в кэш не пишем
+        if result is not None or _TRUNCATED[0] == 0:
+            tt[key] = result
     return result
 
 
@@ -1041,15 +1050,20 @@ def _get_best_move_impl(board: Board, player: int) -> Tuple[int, int]:
     if opp_stones >= 3:
         opp_vcf = search_vcf(board, depth=vcf_depth, player=opponent,
                              is_attacking=True, budget=[2000])
+
         if opp_vcf:
             log(f"  VCF противника начинается с {opp_vcf}")
+            trunc0 = _TRUNCATED[0]
             defense = find_vcf_defense(board, player, depth=vcf_depth,
                                        known_threat=opp_vcf)
             if defense:
                 log(f"  -> защита найдена: {defense}")
                 return defense
-            tactically_lost = True
-            log("  ни одна защита не опровергает VCF — позиция тактически проиграна")
+            if _TRUNCATED[0] > trunc0:
+                log("  защита не доказана: поиск оборван — НЕ считаем позицию проигранной")
+            else:
+                tactically_lost = True
+                log("  ни одна защита не опровергает VCF — позиция тактически проиграна")
         else:
             log("  VCF противника нет")
     else:
@@ -1080,12 +1094,16 @@ def _get_best_move_impl(board: Board, player: int) -> Tuple[int, int]:
                              is_attacking=True, budget=[1200], tt={})
         if opp_vct:
             log(f"  VCT противника начинается с {opp_vct}")
+            trunc0 = _TRUNCATED[0]
             d = find_vct_defense(board, player, depth=4, known_threat=opp_vct)
             if d:
                 log(f"  -> защита найдена: {d}")
                 return d
-            tactically_lost = True
-            log("  VCT не опровергается — позиция тактически проиграна")
+            if _TRUNCATED[0] > trunc0:
+                log("  защита не доказана: поиск оборван — НЕ считаем позицию проигранной")
+            else:
+                tactically_lost = True
+                log("  VCT не опровергается — позиция тактически проиграна")
         else:
             log("  VCT противника нет")
 
@@ -1171,6 +1189,7 @@ def _get_best_move_impl(board: Board, player: int) -> Tuple[int, int]:
 def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     """Обёртка: жёсткий лимит времени на ход и гарантия восстановления доски."""
     global _MOVE_DEADLINE
+    _TRUNCATED[0] = 0
     base_len = len(board.move_history)
     t0 = time.perf_counter()
     _MOVE_DEADLINE = t0 + MOVE_TIME_LIMIT
