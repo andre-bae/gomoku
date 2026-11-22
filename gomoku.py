@@ -440,6 +440,13 @@ def search_vct(board: Board, depth: int, player: int, is_attacking: bool,
             continue                      # не форсирующая угроза
 
         if is_double_threat_new(board, attacker):
+            # C4: вилка не победа, если защитник выигрывает четвёрками раньше
+            ref = search_vcf(board, depth=8, player=defender,
+                             is_attacking=True, budget=[400])
+            if ref is not None:
+                log(f"{ind}VCT: вилка после {move} отклонена — у защитника VCF {ref}")
+                board.undo_move()
+                continue
             log(f"{ind}VCT: неустранимая угроза после {move}")
             log(f"{ind}  путь: {' -> '.join(path + [tag])}")
             log(f"{ind}  угрозы: {describe(threats)}")
@@ -642,7 +649,8 @@ def block_open_three_threats(board: Board, player: int) -> Optional[Tuple[int, i
 
 
 def find_own_fork(board: Board, player: int) -> Optional[Tuple[int, int]]:
-    """Этап 6: вилка проверяется анализатором, с учётом темпа противника."""
+    """Этап 6 + C4: вилка проверяется анализатором, с учётом темпа противника.
+    Вилка не годится, если противник успевает выиграть серией четвёрок (VCF)."""
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
     if completion_points(board, opponent):
         return None                      # противник собирает пятёрку первым
@@ -650,6 +658,13 @@ def find_own_fork(board: Board, player: int) -> Optional[Tuple[int, int]]:
         board.make_move(x, y, player)
         ok = (is_double_threat_new(board, player)
               and not completion_points(board, opponent))
+        if ok:
+            # C4: у противника может быть более быстрый форсированный выигрыш
+            ref = search_vcf(board, depth=8, player=opponent,
+                             is_attacking=True, budget=[400])
+            if ref is not None:
+                log(f"  вилка ({x},{y}) отклонена: у противника VCF {ref}")
+                ok = False
         board.undo_move()
         if ok:
             log(f"  вилка найдена в ({x},{y})")
@@ -1094,7 +1109,7 @@ def _get_best_move_impl(board: Board, player: int) -> Tuple[int, int]:
         return fork_block
     log("  -> не найдена")
 
-    log("\n[ШАГ 7-8] VCT временно отключён (этап 6)")
+    log("\n[ШАГ 7-8] (VCT уже проверен на шаге 4.5)")
 
     log("\n[ШАГ 9] Позиционный поиск (iterative deepening)")
     candidates = board.get_candidate_moves(radius=2)

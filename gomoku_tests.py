@@ -18,7 +18,7 @@ from gomoku import (
     count_all_open_threes, get_best_move, DEBUG_LOG,
     find_vcf_defense, block_open_three_threats,
     evaluate_position, minimax, search_vct,
-    find_vct_defense, choose_resistance_move, assign_roles,
+    find_vct_defense, choose_resistance_move, assign_roles, find_own_fork,
 )
 
 from gomoku_analysis import (
@@ -434,6 +434,21 @@ def test_c2_four_with_tail_not_double_counted():
     s_tail = evaluate_position(tail, PLAYER_X, to_move=PLAYER_O)
     assert s_tail - s_plain < 20_000, \
         f"хвост добавил {s_tail - s_plain} очков — четвёрка посчитана дважды"
+
+
+@case("C4: вилка не предлагается, если у противника есть более быстрый VCF")
+def test_c4_fork_rejected_when_defender_has_vcf():
+    b = build([(1, 0), (2, 0), (0, 1), (0, 2)], [(5, 5), (6, 5), (7, 5)])
+    # у X вилка 3-3 в (0,0), но O живой тройкой делает живую четвёрку и выигрывает раньше
+    assert search_vcf(b, depth=8, player=PLAYER_O, is_attacking=True,
+                      budget=[600]) is not None, "у O должен быть VCF"
+    assert find_own_fork(b, PLAYER_X) is None, "вилка не должна предлагаться"
+
+
+@case("C4: та же вилка годится, когда у противника нет VCF")
+def test_c4_fork_allowed_without_defender_vcf():
+    b = build([(1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10)])
+    assert find_own_fork(b, PLAYER_X) == (0, 0)
 
 
 def run_tests(only: Optional[str] = None) -> int:
