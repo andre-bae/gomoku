@@ -641,11 +641,9 @@ def block_open_three_threats(board: Board, player: int) -> Optional[Tuple[int, i
         vcf = search_vcf(board, depth=12, player=opponent,
                          is_attacking=True, budget=[1500])
         if vcf is None:
-            level, desc = evaluate_threats_after_move(board, opponent)
-            penalty = {4: 1000000, 3: 100000, 2: 20000, 1: 5000}.get(level, 0)
             score = evaluate_position(board, player, to_move=opponent)
             safe.append((score, block_move))
-            log(f"    блок {block_move} безопасен, оценка {score} (угроза {level}: {desc})")
+            log(f"    блок {block_move} безопасен, оценка {score}")
         else:
             log(f"    блок {block_move} ПРОИГРЫВАЕТ: VCF {vcf}")
         board.undo_move()

@@ -2,7 +2,7 @@
 """
 Этап 1: анализатор линий на окнах из 5 клеток.
 Чистый модуль: без GUI, без глобального состояния, без логирования.
-Требует от доски только .grid (dict[(x,y)] -> player) и .get_cell(x,y).
+Требует от доски .grid, .get_cell, .make_move, .undo_move.
 """
 
 from dataclasses import dataclass
@@ -239,18 +239,20 @@ def _fork_survives(board, player: int, cells) -> bool:
     Пробуем клетки-кандидаты (точки достройки четвёрок и ключевые точки троек).
     Если после какой-то из них не остаётся ни четвёрок, ни живых троек —
     это не вилка.
+    C8: пробный ход делается через make_move/undo_move, чтобы хеш доски
+    и будущие кэши оставались согласованными.
     """
     defender = _other(player)
     for (x, y) in sorted(cells):
         if board.get_cell(x, y) != EMPTY:
             continue
-        board.grid[(x, y)] = defender
+        board.make_move(x, y, defender)
         try:
             th = analyze_threats(board, player)
             has_four = any(t.kind in (FIVE, LIVE_FOUR, FOUR) for t in th)
             live = sum(1 for t in th if t.kind == LIVE_THREE)
         finally:
-            del board.grid[(x, y)]
+            board.undo_move()
         if not has_four and live == 0:
             return False
     return True

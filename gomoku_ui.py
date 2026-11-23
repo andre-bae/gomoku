@@ -16,33 +16,12 @@ try:
         Board, PLAYER_X, PLAYER_O, EMPTY, WIN_LENGTH,
         player_name, get_best_move, DEBUG_LOG,
     )
-except ImportError:
-    # Заглушка на случай, если файла gomoku.py нет под рукой, чтобы код хотя бы открылся
-    PLAYER_X, PLAYER_O, EMPTY = "X", "O", "."
-    WIN_LENGTH = 5
-    DEBUG_LOG = []
-
-
-    def player_name(p):
-        return p
-
-
-    def get_best_move(b, p):
-        return (0, 0)
-
-
-    class Board:
-        def __init__(self): self.move_history = []
-
-        def is_empty(self, x, y): return True
-
-        def make_move(self, x, y, p): self.move_history.append((x, y, p)); return True
-
-        def undo_move(self): return self.move_history.pop()
-
-        def get_cell(self, x, y): return EMPTY
-
-        def copy(self): return self
+except ImportError as exc:
+    raise ImportError(
+        "Не найден движок gomoku.py — интерфейс без него работать не может.\n"
+        "Проверьте, что gomoku.py и gomoku_analysis.py лежат рядом с gomoku_ui.py.\n"
+        "Исходная ошибка: %s" % exc
+    ) from exc
 
 # ---------------------------------------------------------------- палитра
 BG = "#e8edf3"

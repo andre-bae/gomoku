@@ -36,10 +36,19 @@ def build(x_stones: List[Tuple[int, int]], o_stones: List[Tuple[int, int]]) -> B
     return b
 
 
-def from_moves(moves: List[list]) -> Board:
+def from_moves(moves: List) -> Board:
+    """C12: понимает два формата ходов.
+    компактный:  ["X", x, y]
+    сохранённый: {"player": "X", "x": x, "y": y, ...}  (кнопка «Сохранить S»)
+    """
     b = Board()
-    for p, x, y in moves:
-        b.make_move(x, y, PLAYER_X if p == "X" else PLAYER_O)
+    for m in moves:
+        if isinstance(m, dict):
+            p, x, y = m["player"], m["x"], m["y"]
+        else:
+            p, x, y = m[0], m[1], m[2]
+        mark = PLAYER_X if str(p).strip().upper() == "X" else PLAYER_O
+        b.make_move(int(x), int(y), mark)
     return b
 
 
@@ -469,6 +478,42 @@ def test_truncation_counter_reset():
     b = build([(0, 0), (1, 0), (2, 0)], [(10, 10)])
     get_best_move(b, PLAYER_X)
     assert gomoku._TRUNCATED[0] < 99, "счётчик должен обнуляться в обёртке get_best_move"
+
+
+@case("C8: проверка вилки делает пробные ходы через make_move")
+def test_fork_uses_make_move():
+    class Tracked(Board):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+        def make_move(self, x, y, p):
+            self.calls += 1
+            return super().make_move(x, y, p)
+    b = Tracked()
+    for x, y in [(1, 0), (2, 0), (0, 1), (0, 2)]:
+        b.make_move(x, y, PLAYER_X)
+    b.make_move(10, 10, PLAYER_O)
+    b.make_move(0, 0, PLAYER_X)
+    before = b.calls
+    assert is_double_threat_new(b, PLAYER_X) is True
+    assert b.calls > before, "пробные ходы защитника шли в обход make_move"
+
+
+@case("C12: from_moves понимает формат сохранённой партии")
+def test_from_moves_dict_format():
+    moves = [{"n": 1, "player": "X", "x": 0, "y": 0, "elapsed": None, "analysis": ""},
+             {"n": 2, "player": "O", "x": 1, "y": 0, "elapsed": 0.5, "analysis": "лог"}]
+    b = from_moves(moves)
+    assert b.get_cell(0, 0) == PLAYER_X
+    assert b.get_cell(1, 0) == PLAYER_O
+    assert len(b.move_history) == 2
+
+
+@case("C12: from_moves по-прежнему понимает компактный формат")
+def test_from_moves_list_format():
+    b = from_moves([["X", 0, 0], ["O", 1, 0]])
+    assert b.get_cell(0, 0) == PLAYER_X
+    assert b.get_cell(1, 0) == PLAYER_O
 
 
 def run_tests(only: Optional[str] = None) -> int:
