@@ -544,16 +544,47 @@ def find_all_open_three_blocks(board: Board, player: int) -> List[Tuple[int, int
     return sorted(points)
 
 
+def vcf_defense_candidates(board: Board, player: int,
+                           threat: Tuple[int, int],
+                           max_candidates: int = 12) -> List[Tuple[int, int]]:
+    """C7: приоритетный набор кандидатов защиты от VCF.
+    Порядок: первый ход угрозы -> вынужденные блокировки -> наши контр-четвёрки ->
+    ключевые точки живых троек противника -> клетки, где противник сделает четвёрку.
+    Последний пункт добавлен на C7: раньше правильная защита могла не попасть
+    в список (например, блок будущей четвёрки из спящей тройки).
+    """
+    opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
+    ordered = [threat]
+    ordered += sorted(completion_points(board, opponent))
+    ordered += generate_four_moves(board, player)              # наши контр-четвёрки
+    live_pts = set()
+    for t in analyze_threats(board, opponent):
+        if t.kind == LIVE_THREE:
+            live_pts.update(t.points)
+    ordered += sorted(live_pts)
+    ordered += sorted(four_move_candidates(board, opponent))    # C7: его будущие четвёрки
+    seen = set()
+    out = []
+    for m in ordered:
+        if m in seen:
+            continue
+        seen.add(m)
+        if board.is_empty(m[0], m[1]):
+            out.append(m)
+        if len(out) >= max_candidates:
+            break
+    return out
+
+
 def find_vcf_defense(board: Board, player: int, depth: int = 12,
                      known_threat: Optional[Tuple[int, int]] = None) -> Optional[Tuple[int, int]]:
     """
-    Этап 4. Ищем ход, после которого у противника НЕ остаётся VCF.
-    Кандидаты: клетка первого хода VCF, точки достройки его четвёрок,
-    ключевые точки живых троек, наши контр-четвёрки.
-    Каждый кандидат проверяется повторным поиском.
+    Этап 4 + C7. Ищем ход, после которого у противника НЕ остаётся VCF.
+    Кандидаты — приоритетный список, каждый проверяется повторным поиском.
+    Доказанные защиты предпочтительнее недоказанных.
+    При нехватке времени возвращаем лучшую из уже проверенных.
     """
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
-
     threat = known_threat
     if threat is None:
         threat = search_vcf(board, depth=depth, player=opponent,
@@ -561,44 +592,38 @@ def find_vcf_defense(board: Board, player: int, depth: int = 12,
     if threat is None:
         return None
 
-    candidates = {threat}
-    candidates.update(completion_points(board, opponent))
-    for t in analyze_threats(board, opponent):
-        if t.kind == LIVE_THREE:
-            candidates.update(t.points)
-    candidates.update(generate_four_moves(board, player))   # контр-четвёрки
+    candidates = vcf_defense_candidates(board, player, threat)
+    log(f"    кандидаты защиты ({len(candidates)}): {candidates}")
 
     verified = []
-    for move in sorted(candidates):
-        if not board.is_empty(move[0], move[1]):
-            continue
+    for move in candidates:
+        if _time_up() and verified:
+            log("    время на исходе — берём лучшую из проверенных защит")
+            break
         board.make_move(move[0], move[1], player)
-
+        trunc0 = _TRUNCATED[0]
         still_vcf = search_vcf(board, depth=depth, player=opponent,
                                is_attacking=True, budget=[2000])
         if still_vcf is not None:
             log(f"    защита {move} не помогает: VCF {still_vcf}")
             board.undo_move()
             continue
-
-        # VCF отбит — проверяем, не выигрывает ли противник через тройки
         still_vct = search_vct(board, depth=4, player=opponent,
                                is_attacking=True, budget=[800], tt={})
-
-        # тай-брейк с просмотром лучшего ответа противника, а не статикой
+        proven = (_TRUNCATED[0] == trunc0)
         score = minimax(board, depth=2, alpha=-float('inf'), beta=float('inf'),
                         is_maximizing=False, player=player, budget=[3000], tt={})
-
-        verified.append((0 if still_vct is None else 1, score, move))
+        verified.append((0 if still_vct is None else 1,
+                         0 if proven else 1, score, move))
         log(f"    защита {move}: VCF нет, VCT "
-            f"{'нет' if still_vct is None else still_vct}, просмотр {score}")
+            f"{'нет' if still_vct is None else still_vct}, просмотр {score}"
+            f"{'' if proven else ' (проверка оборвана — условно)'}")
         board.undo_move()
 
     if not verified:
         return None
-    # сначала те, что гасят и VCF, и VCT; внутри группы — по просмотру
-    verified.sort(key=lambda t: (t[0], -t[1], t[2]))
-    return verified[0][2]
+    verified.sort(key=lambda t: (t[0], t[1], -t[2], t[3]))
+    return verified[0][3]
 
 
 def evaluate_threats_after_move(board: Board, player: int) -> Tuple[int, str]:

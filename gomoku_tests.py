@@ -516,6 +516,15 @@ def test_from_moves_list_format():
     assert b.get_cell(1, 0) == PLAYER_O
 
 
+@case("C7: в кандидаты защиты входят клетки будущих четвёрок противника")
+def test_vcf_defense_candidates_widened():
+    from gomoku import vcf_defense_candidates
+    # спящая тройка OXXX: живых троек нет, но (3,0) и (4,0) — его будущие четвёрки
+    b = build([(0, 0), (1, 0), (2, 0)], [(-1, 0)])
+    cands = vcf_defense_candidates(b, PLAYER_O, (3, 0))
+    assert (4, 0) in cands, f"клетка будущей четвёрки не попала в список: {cands}"
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)
