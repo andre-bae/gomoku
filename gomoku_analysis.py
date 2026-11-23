@@ -1,7 +1,7 @@
 # gomoku_analysis.py
 """
 Этап 1: анализатор линий на окнах из 5 клеток.
-Чистый модуль: без GUI, без глобального состояния, без логирования.
+Чистый модуль: без GUI, без логирования. Есть кэш окон (S1a) — см. clear_window_cache().
 Требует от доски .grid, .get_cell, .make_move, .undo_move.
 """
 
@@ -87,8 +87,25 @@ def _split_opponent(vals: List[int], opponent: int) -> List[Tuple[int, int]]:
 
 # ---------- ядро: окна из 5 ----------
 
+_WINDOW_CACHE: Dict[Tuple[int, bytes], Tuple] = {}
+_WINDOW_CACHE_MAX = 30_000
+
+
+def clear_window_cache() -> None:
+    """Очистить кэш окон (для тестов и честных замеров)."""
+    _WINDOW_CACHE.clear()
+
+
 def _scan_windows(vals: List[int], player: int, opponent: int):
-    """Возвращает fives, fours, threes по индексам внутри vals."""
+    """Возвращает fives, fours, threes по индексам внутри vals.
+    S1a: результат кэшируется по содержимому отрезка. При ходе меняются
+    только 4 линии, остальные окна повторяются от узла к узлу.
+    ВНИМАНИЕ: возвращаемые словари общие — изменять их нельзя.
+    """
+    key = (player, bytes(vals))
+    hit = _WINDOW_CACHE.get(key)
+    if hit is not None:
+        return hit
     n = len(vals)
     fives: List[Tuple[int, ...]] = []
     fours: Dict[Tuple[int, ...], Set[int]] = {}
@@ -109,14 +126,18 @@ def _scan_windows(vals: List[int], player: int, opponent: int):
         if bad:
             continue
         k = len(stones)
-        key = tuple(stones)
+        key2 = tuple(stones)
         if k == 5:
-            fives.append(key)
+            fives.append(key2)
         elif k == 4:
-            fours.setdefault(key, set()).update(empties)
+            fours.setdefault(key2, set()).update(empties)
         elif k == 3:
-            threes.setdefault(key, set()).update(empties)
-    return fives, fours, threes
+            threes.setdefault(key2, set()).update(empties)
+    result = (fives, fours, threes)
+    if len(_WINDOW_CACHE) >= _WINDOW_CACHE_MAX:
+        _WINDOW_CACHE.clear()
+    _WINDOW_CACHE[key] = result
+    return result
 
 
 def _classify_three(vals: List[int], player: int, opponent: int,

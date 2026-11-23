@@ -1,3 +1,3 @@
-stones=12 analyze_x2=  0.41ms eval=  0.83ms nodes/s=   681 move=(3, -1) time= 2.58s decided=ШАГ 9
-stones=24 analyze_x2=  0.90ms eval=  1.58ms nodes/s=   475 move=(-3, -3) time= 0.01s decided=ШАГ 4.4
-stones=36 analyze_x2=  1.34ms eval=  2.19ms nodes/s=   413 move=(1, 1) time= 2.12s decided=ШАГ 4
+stones=12 analyze_x2=  0.34ms eval=  0.67ms nodes/s=   900 move=(3, -1) time= 2.40s decided=ШАГ 9
+stones=24 analyze_x2=  0.52ms eval=  1.15ms nodes/s=   736 move=(-3, -3) time= 0.01s decided=ШАГ 4.4
+stones=36 analyze_x2=  0.76ms eval=  1.79ms nodes/s=   620 move=(1, 1) time= 1.44s decided=ШАГ 4

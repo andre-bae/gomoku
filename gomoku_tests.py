@@ -547,6 +547,30 @@ def test_five_through_matches_full():
         assert five_through(b, x, y, p) == check_five(b, p), f"расхождение на ходу {i}"
 
 
+@case("S1a: кэш окон не меняет результат анализатора")
+def test_window_cache_same_result():
+    from gomoku_analysis import clear_window_cache
+    b = build([(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10), (-3, 2)])
+    clear_window_cache()
+    cold = sorted((t.kind, t.stones, t.points) for t in analyze_threats(b, PLAYER_X))
+    warm = sorted((t.kind, t.stones, t.points) for t in analyze_threats(b, PLAYER_X))
+    assert cold == warm, "кэш изменил результат"
+    clear_window_cache()
+    again = sorted((t.kind, t.stones, t.points) for t in analyze_threats(b, PLAYER_X))
+    assert cold == again, "после очистки результат другой"
+
+
+@case("S1a: кэш окон наполняется и очищается")
+def test_window_cache_populates():
+    import gomoku_analysis as ga
+    ga.clear_window_cache()
+    b = build([(0, 0), (1, 0), (2, 0)], [])
+    ga.analyze_threats(b, PLAYER_X)
+    assert len(ga._WINDOW_CACHE) > 0, "кэш пуст — значит не работает"
+    ga.clear_window_cache()
+    assert len(ga._WINDOW_CACHE) == 0
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)

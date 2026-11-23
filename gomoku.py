@@ -931,13 +931,15 @@ def evaluate_position(board: Board, player: int, to_move: Optional[int] = None) 
     return score
 
 
-def _order_moves(board: Board, side: int, candidates) -> List[Tuple[Tuple[int, int], int]]:
+def _order_moves(board: Board, side: int, candidates,
+                 my_th=None) -> List[Tuple[Tuple[int, int], int]]:
     """
-    Этап 5. Быстрая сортировка для alpha-beta: 3 прохода анализатора на узел
-    вместо полной оценки каждого кандидата.
+    Этап 5. Быстрая сортировка для alpha-beta.
+    S1a: свои угрозы можно передать снаружи — они уже посчитаны в узле.
     """
     opp = PLAYER_O if side == PLAYER_X else PLAYER_X
-    my_th = analyze_threats(board, side)
+    if my_th is None:
+        my_th = analyze_threats(board, side)
     op_th = analyze_threats(board, opp)
     my_pts = {p for t in my_th if t.kind in (FOUR, LIVE_FOUR) for p in t.points}
     op_pts = {p for t in op_th if t.kind in (FOUR, LIVE_FOUR) for p in t.points}
@@ -989,7 +991,8 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
         lx, ly, lp = board.move_history[-1]
         if five_through(board, lx, ly, lp):
             return 10_000_000 if lp == player else -10_000_000
-    if completion_points(board, current):
+    cur_th = analyze_threats(board, current)
+    if any(t.kind in (FOUR, LIVE_FOUR) for t in cur_th):
         return 9_999_999 if current == player else -9_999_999
 
     if depth <= 0:
@@ -1012,7 +1015,7 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
                 return val
 
     candidates = board.get_candidate_moves(radius=2)
-    ordered = _order_moves(board, current, candidates)
+    ordered = _order_moves(board, current, candidates, my_th=cur_th)
     cap = 10
 
     if is_maximizing:
