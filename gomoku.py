@@ -152,14 +152,36 @@ def check_five(board: Board, player: int) -> bool:
     return False
 
 
+def five_through(board: Board, x: int, y: int, player: int) -> bool:
+    """S2: есть ли пятёрка, проходящая через клетку (x,y).
+    Проверяем только 4 линии через эту клетку, а не всю доску.
+    В поиске новая пятёрка может появиться только через последний ход.
+    """
+    if board.get_cell(x, y) != player:
+        return False
+    for dx, dy in ((1, 0), (0, 1), (1, 1), (1, -1)):
+        n = 1
+        nx, ny = x + dx, y + dy
+        while board.get_cell(nx, ny) == player:
+            n += 1
+            nx += dx
+            ny += dy
+        nx, ny = x - dx, y - dy
+        while board.get_cell(nx, ny) == player:
+            n += 1
+            nx -= dx
+            ny -= dy
+        if n >= WIN_LENGTH:
+            return True
+    return False
+
+
 def check_immediate_win(board: Board, player: int) -> Optional[Tuple[int, int]]:
-    for x, y in board.get_candidate_moves(radius=1):
-        board.make_move(x, y, player)
-        if check_five(board, player):
-            board.undo_move()
-            return (x, y)
-        board.undo_move()
-    return None
+    """S2: клетки, собирающие пятёрку, даёт анализатор одним проходом.
+    Раньше здесь перебирались все соседние клетки с полной проверкой доски.
+    """
+    pts = completion_points(board, player)
+    return min(pts) if pts else None
 
 
 def count_line(board: Board, x: int, y: int, dx: int, dy: int, player: int) -> Tuple[int, int]:
@@ -333,7 +355,7 @@ def search_vcf(board: Board, depth: int, player: int, is_attacking: bool,
         board.make_move(move[0], move[1], attacker)
         tag = f"{player_name(attacker)}{move}"
 
-        if check_five(board, attacker):
+        if five_through(board, move[0], move[1], attacker):
             log(f"{ind}VCF: пятёрка {move} | путь: {' -> '.join(path + [tag])}")
             board.undo_move()
             return move
@@ -428,7 +450,7 @@ def search_vct(board: Board, depth: int, player: int, is_attacking: bool,
         board.make_move(move[0], move[1], attacker)
         tag = f"{player_name(attacker)}{move}"
 
-        if check_five(board, attacker):
+        if five_through(board, move[0], move[1], attacker):
             log(f"{ind}VCT: пятёрка {move} | путь: {' -> '.join(path + [tag])}")
             result = move
             board.undo_move()
@@ -963,10 +985,10 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
     if _time_up():
         raise SearchTimeout
 
-    if check_five(board, PLAYER_X):
-        return 10_000_000 if player == PLAYER_X else -10_000_000
-    if check_five(board, PLAYER_O):
-        return 10_000_000 if player == PLAYER_O else -10_000_000
+    if board.move_history:
+        lx, ly, lp = board.move_history[-1]
+        if five_through(board, lx, ly, lp):
+            return 10_000_000 if lp == player else -10_000_000
     if completion_points(board, current):
         return 9_999_999 if current == player else -9_999_999
 

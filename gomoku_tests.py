@@ -525,6 +525,28 @@ def test_vcf_defense_candidates_widened():
     assert (4, 0) in cands, f"клетка будущей четвёрки не попала в список: {cands}"
 
 
+@case("S2: five_through видит пятёрку через клетку и не путает с четвёркой")
+def test_five_through_basic():
+    from gomoku import five_through
+    b = build([(0, 0), (1, 0), (2, 0), (3, 0)], [])
+    assert five_through(b, 0, 0, PLAYER_X) is False
+    b.make_move(4, 0, PLAYER_X)
+    assert five_through(b, 4, 0, PLAYER_X) is True
+    assert five_through(b, 2, 0, PLAYER_X) is True
+    assert five_through(b, 4, 0, PLAYER_O) is False
+
+
+@case("S2: быстрая проверка пятёрки совпадает с полной на серии ходов")
+def test_five_through_matches_full():
+    from gomoku import five_through, check_five
+    b = Board()
+    seq = [(0, 0), (1, 0), (0, 1), (2, 0), (0, 2), (3, 0), (0, 3), (4, 0), (0, 4)]
+    for i, (x, y) in enumerate(seq):
+        p = PLAYER_X if i % 2 == 0 else PLAYER_O
+        b.make_move(x, y, p)
+        assert five_through(b, x, y, p) == check_five(b, p), f"расхождение на ходу {i}"
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)
