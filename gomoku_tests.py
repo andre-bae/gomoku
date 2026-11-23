@@ -571,6 +571,15 @@ def test_window_cache_populates():
     assert len(ga._WINDOW_CACHE) == 0
 
 
+@case("S7a: после углубления ИИ по-прежнему находит форсированную вилку")
+def test_root_still_finds_fork():
+    b = build([(1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10)])
+    m = get_best_move(b, PLAYER_X)
+    assert m is not None and b.is_empty(m[0], m[1])
+    b.make_move(m[0], m[1], PLAYER_X)
+    assert is_double_threat_new(b, PLAYER_X), f"ход {m} не создаёт вилку"
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)

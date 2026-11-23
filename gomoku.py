@@ -1206,14 +1206,14 @@ def _get_best_move_impl(board: Board, player: int) -> Tuple[int, int]:
     root_moves = [m for m, _ in scored[:max_candidates]]
     best_move = root_moves[0]
 
-    for depth in range(1, 5):
+    for depth in range(1, 7):
         best_score = -float('inf')
         local_best = None
         for (x, y) in root_moves:
             if time.perf_counter() > deadline or mm_budget[0] <= 0:
                 break
             board.make_move(x, y, player)
-            score = minimax(board, depth - 1, -float('inf'), float('inf'),
+            score = minimax(board, depth - 1, best_score, float('inf'),
                             False, player, mm_budget, tt)
             board.undo_move()
             log(f"  d={depth} ({x},{y}) = {score}")

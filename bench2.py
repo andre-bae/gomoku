@@ -52,6 +52,18 @@ def deciding_step():
     return step
 
 
+def max_depth():
+    d = 0
+    for ln in DEBUG_LOG:
+        s = ln.strip()
+        if s.startswith("глубина "):
+            try:
+                d = max(d, int(s.split(":")[0].split()[1]))
+            except Exception:
+                pass
+    return d
+
+
 def nodes_per_sec(b, side, n=400):
     budget = [n]
     t0 = time.perf_counter()
@@ -76,8 +88,8 @@ def main():
         mv = get_best_move(b, side)
         mt = time.perf_counter() - t0
         line = ("stones=%2d analyze_x2=%6.2fms eval=%6.2fms nodes/s=%6.0f "
-                "move=%s time=%5.2fs decided=%s"
-                % (n, an, ev, nps, mv, mt, deciding_step()))
+                "move=%s time=%5.2fs depth=%d decided=%s"
+                % (n, an, ev, nps, mv, mt, max_depth(), deciding_step()))
         lines.append(line)
         print(line, flush=True)
     with open("bench2.txt", "w", encoding="utf-8") as f:
