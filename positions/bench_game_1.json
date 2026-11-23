@@ -1,5 +1,5 @@
 {
-  "saved": "2026-11-23 23:40:46",
+  "saved": "2026-11-24 00:20:35",
   "mode": "selfplay",
   "moves": [
     {
@@ -29,8 +29,8 @@
     {
       "n": 4,
       "player": "O",
-      "x": -2,
-      "y": 0,
+      "x": -3,
+      "y": 2,
       "elapsed": null,
       "analysis": ""
     },
@@ -54,47 +54,47 @@
       "n": 7,
       "player": "X",
       "x": -1,
-      "y": 2,
+      "y": 0,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 8,
       "player": "O",
-      "x": -2,
-      "y": 2,
+      "x": -3,
+      "y": 0,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 9,
       "player": "X",
-      "x": -2,
-      "y": 3,
+      "x": 0,
+      "y": -1,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 10,
       "player": "O",
-      "x": 1,
-      "y": 0,
+      "x": 0,
+      "y": -2,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 11,
       "player": "X",
-      "x": -2,
-      "y": -1,
+      "x": -1,
+      "y": 2,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 12,
       "player": "O",
-      "x": 1,
-      "y": 2,
+      "x": -3,
+      "y": 1,
       "elapsed": null,
       "analysis": ""
     },
@@ -109,8 +109,8 @@
     {
       "n": 14,
       "player": "O",
-      "x": 0,
-      "y": -1,
+      "x": -3,
+      "y": 3,
       "elapsed": null,
       "analysis": ""
     },
@@ -125,8 +125,8 @@
     {
       "n": 16,
       "player": "O",
-      "x": -4,
-      "y": 5,
+      "x": -2,
+      "y": 3,
       "elapsed": null,
       "analysis": ""
     },
@@ -134,63 +134,63 @@
       "n": 17,
       "player": "X",
       "x": -1,
-      "y": 4,
+      "y": 3,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 18,
       "player": "O",
-      "x": -4,
-      "y": 4,
+      "x": -1,
+      "y": 1,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 19,
       "player": "X",
-      "x": -4,
-      "y": -1,
+      "x": -5,
+      "y": 1,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 20,
       "player": "O",
-      "x": -5,
-      "y": -1,
+      "x": -2,
+      "y": 0,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 21,
       "player": "X",
-      "x": -1,
-      "y": 1,
+      "x": -2,
+      "y": -1,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 22,
       "player": "O",
-      "x": -1,
-      "y": 3,
+      "x": -2,
+      "y": 2,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 23,
       "player": "X",
-      "x": -4,
-      "y": 1,
+      "x": -2,
+      "y": 4,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 24,
       "player": "O",
-      "x": -3,
-      "y": 2,
+      "x": -5,
+      "y": 5,
       "elapsed": null,
       "analysis": ""
     }

@@ -643,6 +643,23 @@ def test_depth_timing_logged():
     assert any("заняло" in ln for ln in lines), f"нет времени итераций: {lines}"
 
 
+@case("S6c: прогноз не даёт начать итерацию, которая не влезет")
+def test_depth_prediction():
+    from gomoku import _should_start_depth
+    assert _should_start_depth(0.0, 10.0, 12.0) is True    # первая итерация всегда
+    assert _should_start_depth(0.5, 10.0, 12.0) is True    # 0.5*3=1.5 <= 2.0
+    assert _should_start_depth(0.8, 10.0, 12.0) is False   # 2.4 > 2.0
+    assert _should_start_depth(0.5, 10.0, 0.0) is True     # без дедлайна — можно
+
+
+@case("S6c: в логе есть метки времени у строк")
+def test_log_has_time_marks():
+    b = build([(0, 0), (1, 0)], [(5, 5), (6, 5)])
+    get_best_move(b, PLAYER_X)
+    assert DEBUG_LOG, "лог пуст"
+    assert any("(t=" in ln for ln in DEBUG_LOG), "нет меток времени"
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)

@@ -65,9 +65,12 @@ DEBUG_LOG: List[str] = []
 DEBUG_ENABLED = True
 
 
+_LOG_T0 = [0.0]
+
+
 def log(msg: str):
     if DEBUG_ENABLED:
-        DEBUG_LOG.append(msg)
+        DEBUG_LOG.append(f"{msg}  (t={time.perf_counter() - _LOG_T0[0]:.2f})")
 
 
 def player_name(p: int) -> str:
@@ -1052,8 +1055,19 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
     return best
 
 
+def _should_start_depth(last_iter: float, now: float, deadline: float) -> bool:
+    """S6c: стоит ли начинать следующую итерацию углубления.
+    Следующая глубина стоит примерно втрое дороже предыдущей.
+    Если прогноз не влезает в остаток времени — не начинаем.
+    """
+    if last_iter <= 0.0 or deadline <= 0.0:
+        return True
+    return now + last_iter * 3.0 <= deadline
+
+
 def _get_best_move_impl(board: Board, player: int) -> Tuple[int, int]:
     DEBUG_LOG.clear()
+    _LOG_T0[0] = time.perf_counter()
     log(f"=== Ход ИИ ({player_name(player)}) ===")
     log("Доска:")
     for x, y, p in board.move_history:
@@ -1208,7 +1222,12 @@ def _get_best_move_impl(board: Board, player: int) -> Tuple[int, int]:
     best_move = root_moves[0]
     _BEST_SO_FAR[0] = best_move
 
+    last_iter = 0.0
     for depth in range(1, 7):
+        if not _should_start_depth(last_iter, time.perf_counter(), _MOVE_DEADLINE):
+            log(f"  глубина {depth} не начата: прогноз {last_iter * 3.0:.2f} с "
+                f"не влезает в остаток {_MOVE_DEADLINE - time.perf_counter():.2f} с")
+            break
         t_depth = time.perf_counter()
         done = 0
         best_score = -float('inf')
@@ -1226,12 +1245,13 @@ def _get_best_move_impl(board: Board, player: int) -> Tuple[int, int]:
                 best_score = score
                 local_best = (x, y)
                 _BEST_SO_FAR[0] = local_best   # не теряем при обрыве по времени
+        last_iter = time.perf_counter() - t_depth
         if local_best is not None:
             best_move = local_best
             root_moves.remove(local_best)
             root_moves.insert(0, local_best)
             log(f"  глубина {depth}: лучший {local_best}, оценка {best_score}, "
-                f"ходов {done}/{len(root_moves)}, заняло {time.perf_counter() - t_depth:.2f} с")
+                f"ходов {done}/{len(root_moves)}, заняло {last_iter:.2f} с")
         if time.perf_counter() > deadline or mm_budget[0] <= 0:
             log(f"  углубление остановлено на глубине {depth}: "
                 f"пройдено {done}/{len(root_moves)} корневых ходов")
