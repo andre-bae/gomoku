@@ -32,6 +32,7 @@ ENABLE_THREAT_SCAN_AFTER_BLOCK = False    # скан угроз после ка�
 MOVE_TIME_LIMIT = 3.0                     # жёсткий лимит секунд на ход ИИ
 _MOVE_DEADLINE = 0.0                      # служебное: когда время истекает
 _TRUNCATED = [0]                          # счётчик обрывов поиска: >0 = бюджет исчерпан
+_BEST_SO_FAR = [None]                     # лучший ход, найденный поиском в этом ходу ИИ
 
 
 class SearchTimeout(Exception):
@@ -1205,8 +1206,11 @@ def _get_best_move_impl(board: Board, player: int) -> Tuple[int, int]:
     max_candidates = 7 if len(board.move_history) < 6 else 15
     root_moves = [m for m, _ in scored[:max_candidates]]
     best_move = root_moves[0]
+    _BEST_SO_FAR[0] = best_move
 
     for depth in range(1, 7):
+        t_depth = time.perf_counter()
+        done = 0
         best_score = -float('inf')
         local_best = None
         for (x, y) in root_moves:
@@ -1216,17 +1220,21 @@ def _get_best_move_impl(board: Board, player: int) -> Tuple[int, int]:
             score = minimax(board, depth - 1, best_score, float('inf'),
                             False, player, mm_budget, tt)
             board.undo_move()
+            done += 1
             log(f"  d={depth} ({x},{y}) = {score}")
             if score > best_score:
                 best_score = score
                 local_best = (x, y)
+                _BEST_SO_FAR[0] = local_best   # не теряем при обрыве по времени
         if local_best is not None:
             best_move = local_best
             root_moves.remove(local_best)
             root_moves.insert(0, local_best)
-            log(f"  глубина {depth}: лучший {local_best}, оценка {best_score}")
+            log(f"  глубина {depth}: лучший {local_best}, оценка {best_score}, "
+                f"ходов {done}/{len(root_moves)}, заняло {time.perf_counter() - t_depth:.2f} с")
         if time.perf_counter() > deadline or mm_budget[0] <= 0:
-            log("  бюджет исчерпан — углубление остановлено")
+            log(f"  углубление остановлено на глубине {depth}: "
+                f"пройдено {done}/{len(root_moves)} корневых ходов")
             break
 
     log(f"  -> ВЫБРАН: {best_move}")
@@ -1238,6 +1246,7 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     """Обёртка: жёсткий лимит времени на ход и гарантия восстановления доски."""
     global _MOVE_DEADLINE
     _TRUNCATED[0] = 0
+    _BEST_SO_FAR[0] = None
     base_len = len(board.move_history)
     t0 = time.perf_counter()
     _MOVE_DEADLINE = t0 + MOVE_TIME_LIMIT
@@ -1246,6 +1255,9 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     except SearchTimeout:
         while len(board.move_history) > base_len:
             board.undo_move()
+        if _BEST_SO_FAR[0] is not None:
+            log(f"  !! время хода исчерпано — берём лучший найденный {_BEST_SO_FAR[0]}")
+            return _BEST_SO_FAR[0]
         log("  !! время хода исчерпано — быстрый выбор по сортировке")
         cands = board.get_candidate_moves(radius=1) or [(0, 0)]
         return _order_moves(board, player, cands)[0][0]

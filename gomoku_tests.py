@@ -612,6 +612,37 @@ def test_line_cache_populates():
     assert len(ga._LINE_CACHE) == 0
 
 
+@case("S6a: лучший найденный ход запоминается для аварийного возврата")
+def test_best_so_far_recorded():
+    import gomoku
+    b = build([(0, 0), (1, 0)], [(5, 5), (6, 5)])
+    m = get_best_move(b, PLAYER_X)
+    assert gomoku._BEST_SO_FAR[0] == m, "лучший ход поиска не запомнен"
+
+
+@case("S6a: при жёстком лимите времени возвращается допустимый ход")
+def test_tiny_time_limit_returns_valid_move():
+    import gomoku
+    old = gomoku.MOVE_TIME_LIMIT
+    gomoku.MOVE_TIME_LIMIT = 0.001
+    try:
+        b = build([(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10), (-3, 2)])
+        m = get_best_move(b, PLAYER_X)
+        assert m is not None and b.is_empty(m[0], m[1])
+        assert len(b.move_history) == 7, "доска не восстановлена после обрыва"
+    finally:
+        gomoku.MOVE_TIME_LIMIT = old
+
+
+@case("S6b: в логе есть время каждой итерации углубления")
+def test_depth_timing_logged():
+    b = build([(0, 0), (1, 0)], [(5, 5), (6, 5)])
+    get_best_move(b, PLAYER_X)
+    lines = [ln for ln in DEBUG_LOG if ln.strip().startswith("глубина ")]
+    assert lines, "нет строк об итерациях углубления"
+    assert any("заняло" in ln for ln in lines), f"нет времени итераций: {lines}"
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)
