@@ -96,6 +96,21 @@ def clear_window_cache() -> None:
     _WINDOW_CACHE.clear()
 
 
+_LINE_CACHE: Dict[Tuple[str, int, bytes], object] = {}
+_LINE_CACHE_MAX = 40_000
+
+
+def clear_line_cache() -> None:
+    """Очистить кэш линий (для тестов и честных замеров)."""
+    _LINE_CACHE.clear()
+
+
+def _line_cache_put(key, val) -> None:
+    if len(_LINE_CACHE) >= _LINE_CACHE_MAX:
+        _LINE_CACHE.clear()
+    _LINE_CACHE[key] = val
+
+
 def _scan_windows(vals: List[int], player: int, opponent: int):
     """Возвращает fives, fours, threes по индексам внутри vals.
     S1a: результат кэшируется по содержимому отрезка. При ходе меняются
@@ -304,7 +319,8 @@ def four_move_candidates(board, player: int):
     """
     Клетки, ход в которые создаёт четвёрку или пятёрку.
     Точный критерий: пустая клетка окна из 5, где уже >=3 наших камней
-    и нет камней противника. Один проход по линиям, без симуляций.
+    и нет камней противника.
+    S5a: набор индексов по отрезку кэшируется по содержимому отрезка.
     """
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
     res = set()
@@ -314,24 +330,31 @@ def four_move_candidates(board, player: int):
         vals = [board.get_cell(x, y) for (x, y) in coords]
         for a, b in _split_opponent(vals, opponent):
             sv, sc = vals[a:b], coords[a:b]
-            n = len(sv)
-            for s in range(n - WIN_LEN + 1):
-                stones = 0
-                empties = []
-                bad = False
-                for i in range(s, s + WIN_LEN):
-                    v = sv[i]
-                    if v == opponent:
-                        bad = True
-                        break
-                    if v == player:
-                        stones += 1
-                    else:
-                        empties.append(i)
-                if bad or stones < 3:
-                    continue
-                for i in empties:
-                    res.add(sc[i])
+            key = ("four", player, bytes(sv))
+            idxs = _LINE_CACHE.get(key)
+            if idxs is None:
+                n = len(sv)
+                found = set()
+                for s in range(n - WIN_LEN + 1):
+                    stones = 0
+                    empties = []
+                    bad = False
+                    for i in range(s, s + WIN_LEN):
+                        v = sv[i]
+                        if v == opponent:
+                            bad = True
+                            break
+                        if v == player:
+                            stones += 1
+                        else:
+                            empties.append(i)
+                    if bad or stones < 3:
+                        continue
+                    found.update(empties)
+                idxs = tuple(sorted(found))
+                _line_cache_put(key, idxs)
+            for i in idxs:
+                res.add(sc[i])
     return res
 
 
@@ -339,7 +362,7 @@ def threat_move_candidates(board, player: int):
     """
     Клетки, ход в которые создаёт четвёрку или тройку.
     Надмножество four_move_candidates: окна с >=2 своими камнями.
-    Живая тройка или нет — проверяется уже после хода в search_vct.
+    S5a: кэш по содержимому отрезка.
     """
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
     res = set()
@@ -349,24 +372,31 @@ def threat_move_candidates(board, player: int):
         vals = [board.get_cell(x, y) for (x, y) in coords]
         for a, b in _split_opponent(vals, opponent):
             sv, sc = vals[a:b], coords[a:b]
-            n = len(sv)
-            for s in range(n - WIN_LEN + 1):
-                stones = 0
-                empties = []
-                bad = False
-                for i in range(s, s + WIN_LEN):
-                    v = sv[i]
-                    if v == opponent:
-                        bad = True
-                        break
-                    if v == player:
-                        stones += 1
-                    else:
-                        empties.append(i)
-                if bad or stones < 2:
-                    continue
-                for i in empties:
-                    res.add(sc[i])
+            key = ("threat", player, bytes(sv))
+            idxs = _LINE_CACHE.get(key)
+            if idxs is None:
+                n = len(sv)
+                found = set()
+                for s in range(n - WIN_LEN + 1):
+                    stones = 0
+                    empties = []
+                    bad = False
+                    for i in range(s, s + WIN_LEN):
+                        v = sv[i]
+                        if v == opponent:
+                            bad = True
+                            break
+                        if v == player:
+                            stones += 1
+                        else:
+                            empties.append(i)
+                    if bad or stones < 2:
+                        continue
+                    found.update(empties)
+                idxs = tuple(sorted(found))
+                _line_cache_put(key, idxs)
+            for i in idxs:
+                res.add(sc[i])
     return res
 
 
@@ -374,6 +404,7 @@ def window_potential(board, player: int) -> int:
     """
     Взвешенный потенциал: окна из 5 клеток без камней противника.
     Зажатая с обоих концов линия не даёт вклада — все её окна невалидны.
+    S5a: сумма по отрезку кэшируется по содержимому отрезка.
     """
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
     W = {1: 1, 2: 12, 3: 60}
@@ -384,11 +415,17 @@ def window_potential(board, player: int) -> int:
         vals = [board.get_cell(x, y) for (x, y) in coords]
         for a, b in _split_opponent(vals, opponent):
             sv = vals[a:b]
-            n = len(sv)
-            for s in range(n - WIN_LEN + 1):
-                k = 0
-                for i in range(s, s + WIN_LEN):
-                    if sv[i] == player:
-                        k += 1
-                total += W.get(k, 0)
+            key = ("pot", player, bytes(sv))
+            got = _LINE_CACHE.get(key)
+            if got is None:
+                n = len(sv)
+                got = 0
+                for s in range(n - WIN_LEN + 1):
+                    k = 0
+                    for i in range(s, s + WIN_LEN):
+                        if sv[i] == player:
+                            k += 1
+                    got += W.get(k, 0)
+                _line_cache_put(key, got)
+            total += got
     return total

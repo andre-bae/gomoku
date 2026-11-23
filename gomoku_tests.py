@@ -580,6 +580,38 @@ def test_root_still_finds_fork():
     assert is_double_threat_new(b, PLAYER_X), f"ход {m} не создаёт вилку"
 
 
+@case("S5a: кэш линий не меняет потенциал и наборы кандидатов")
+def test_line_cache_same_result():
+    from gomoku_analysis import (clear_line_cache, four_move_candidates,
+                                 threat_move_candidates)
+    b = build([(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10), (-3, 2)])
+
+    def snap():
+        return (window_potential(b, PLAYER_X),
+                sorted(four_move_candidates(b, PLAYER_X)),
+                sorted(threat_move_candidates(b, PLAYER_X)))
+
+    clear_line_cache()
+    cold = snap()
+    warm = snap()
+    assert cold == warm, "кэш изменил результат"
+    clear_line_cache()
+    assert cold == snap(), "после очистки результат другой"
+
+
+@case("S5a: кэш линий наполняется и очищается")
+def test_line_cache_populates():
+    import gomoku_analysis as ga
+    ga.clear_line_cache()
+    b = build([(0, 0), (1, 0), (2, 0)], [])
+    ga.window_potential(b, PLAYER_X)
+    ga.four_move_candidates(b, PLAYER_X)
+    ga.threat_move_candidates(b, PLAYER_X)
+    assert len(ga._LINE_CACHE) > 0, "кэш пуст — значит не работает"
+    ga.clear_line_cache()
+    assert len(ga._LINE_CACHE) == 0
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)

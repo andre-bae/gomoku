@@ -52,9 +52,10 @@ def play_game(max_moves):
         mv = get_best_move(b, side)
         dt = time.perf_counter() - t0
         step, dep = deciding_step(), reached_depth()
+        panic = any("время хода исчерпано" in ln for ln in DEBUG_LOG)
         b.make_move(mv[0], mv[1], side)
         rows.append({"n": n, "side": player_name(side), "move": mv,
-                     "t": dt, "step": step, "depth": dep})
+                     "t": dt, "step": step, "depth": dep, "panic": panic})
         print("  %2d %s %-10s %5.2fs depth=%d %s"
               % (n, player_name(side), str(mv), dt, dep, step), flush=True)
         if gomoku.check_five(b, side):
@@ -72,6 +73,8 @@ def summarize(rows):
            "время хода: среднее %.2f с, медиана %.2f с, максимум %.2f с"
            % (statistics.mean(ts), statistics.median(ts), max(ts)),
            "дороже 1.5 с: %d ходов (%.0f%%)" % (slow, 100.0 * slow / len(ts))]
+    out.append("аварийных ходов (упёрлись в лимит 3 с): %d"
+               % sum(1 for r in rows if r.get("panic")))
     pos = [r for r in rows if r["step"] == "ШАГ 9"]
     if pos:
         out.append("позиционных ходов (ШАГ 9): %d, средняя глубина %.1f, среднее время %.2f с"
