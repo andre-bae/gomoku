@@ -1,5 +1,5 @@
 {
-  "saved": "2026-11-24 10:45:04",
+  "saved": "2026-11-24 11:26:24",
   "mode": "selfplay",
   "moves": [
     {
@@ -22,28 +22,76 @@
       "n": 3,
       "player": "X",
       "x": 0,
-      "y": 1,
+      "y": -1,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 4,
       "player": "O",
-      "x": -2,
-      "y": 0,
+      "x": -1,
+      "y": 2,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 5,
       "player": "X",
-      "x": 0,
-      "y": 2,
+      "x": -1,
+      "y": -1,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 6,
+      "player": "O",
+      "x": -3,
+      "y": 0,
+      "elapsed": null,
+      "analysis": ""
+    },
+    {
+      "n": 7,
+      "player": "X",
+      "x": -4,
+      "y": -1,
+      "elapsed": null,
+      "analysis": ""
+    },
+    {
+      "n": 8,
+      "player": "O",
+      "x": -2,
+      "y": -1,
+      "elapsed": null,
+      "analysis": ""
+    },
+    {
+      "n": 9,
+      "player": "X",
+      "x": -1,
+      "y": -2,
+      "elapsed": null,
+      "analysis": ""
+    },
+    {
+      "n": 10,
+      "player": "O",
+      "x": -3,
+      "y": -2,
+      "elapsed": null,
+      "analysis": ""
+    },
+    {
+      "n": 11,
+      "player": "X",
+      "x": -3,
+      "y": -4,
+      "elapsed": null,
+      "analysis": ""
+    },
+    {
+      "n": 12,
       "player": "O",
       "x": 0,
       "y": 3,
@@ -51,95 +99,55 @@
       "analysis": ""
     },
     {
-      "n": 7,
+      "n": 13,
+      "player": "X",
+      "x": 1,
+      "y": 4,
+      "elapsed": null,
+      "analysis": ""
+    },
+    {
+      "n": 14,
       "player": "O",
+      "x": -2,
+      "y": -3,
+      "elapsed": null,
+      "analysis": ""
+    },
+    {
+      "n": 15,
+      "player": "X",
       "x": 0,
       "y": -2,
       "elapsed": null,
       "analysis": ""
     },
     {
-      "n": 8,
-      "player": "X",
-      "x": 2,
-      "y": 5,
-      "elapsed": null,
-      "analysis": ""
-    },
-    {
-      "n": 9,
+      "n": 16,
       "player": "O",
-      "x": -1,
-      "y": -1,
-      "elapsed": null,
-      "analysis": ""
-    },
-    {
-      "n": 10,
-      "player": "X",
-      "x": -3,
+      "x": 0,
       "y": 1,
       "elapsed": null,
       "analysis": ""
     },
     {
-      "n": 11,
-      "player": "O",
-      "x": -3,
-      "y": -1,
-      "elapsed": null,
-      "analysis": ""
-    },
-    {
-      "n": 12,
-      "player": "X",
-      "x": -2,
-      "y": 2,
-      "elapsed": null,
-      "analysis": ""
-    },
-    {
-      "n": 13,
-      "player": "O",
-      "x": -1,
-      "y": 2,
-      "elapsed": null,
-      "analysis": ""
-    },
-    {
-      "n": 14,
-      "player": "X",
-      "x": -4,
-      "y": -1,
-      "elapsed": null,
-      "analysis": ""
-    },
-    {
-      "n": 15,
-      "player": "O",
-      "x": -4,
-      "y": 0,
-      "elapsed": null,
-      "analysis": ""
-    },
-    {
-      "n": 16,
-      "player": "X",
-      "x": -3,
-      "y": 0,
-      "elapsed": null,
-      "analysis": ""
-    },
-    {
       "n": 17,
-      "player": "O",
-      "x": -1,
+      "player": "X",
+      "x": 0,
       "y": -3,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 18,
+      "player": "O",
+      "x": 0,
+      "y": -4,
+      "elapsed": null,
+      "analysis": ""
+    },
+    {
+      "n": 19,
       "player": "X",
       "x": -2,
       "y": -2,
@@ -147,26 +155,26 @@
       "analysis": ""
     },
     {
-      "n": 19,
-      "player": "O",
-      "x": 0,
-      "y": -3,
-      "elapsed": null,
-      "analysis": ""
-    },
-    {
       "n": 20,
-      "player": "X",
-      "x": 2,
-      "y": -4,
+      "player": "O",
+      "x": -1,
+      "y": 0,
       "elapsed": null,
       "analysis": ""
     },
     {
       "n": 21,
+      "player": "X",
+      "x": -4,
+      "y": -3,
+      "elapsed": null,
+      "analysis": ""
+    },
+    {
+      "n": 22,
       "player": "O",
-      "x": -1,
-      "y": -4,
+      "x": 1,
+      "y": 2,
       "elapsed": null,
       "analysis": ""
     }

@@ -62,6 +62,16 @@ def _param(didx: int, x: int, y: int) -> int:
 
 
 def _collect_lines(board, player) -> Dict[Tuple[int, int], List[int]]:
+    """S1b: если доска хранит линии сама — берём их, а не обходим все камни."""
+    bl = getattr(board, "lines", None)
+    if bl is not None:
+        out: Dict[Tuple[int, int], List[int]] = {}
+        for didx in range(4):
+            for inv, cells in bl[didx].items():
+                ts = [t for t, p in cells.items() if p == player]
+                if ts:
+                    out[(didx, inv)] = ts
+        return out
     lines: Dict[Tuple[int, int], List[int]] = {}
     for (x, y), p in board.grid.items():
         if p != player:
@@ -100,9 +110,41 @@ _LINE_CACHE: Dict[Tuple[str, int, bytes], object] = {}
 _LINE_CACHE_MAX = 40_000
 
 
+_LINE_GEOM: Dict[Tuple, Tuple[List, List]] = {}
+_LINE_GEOM_MAX = 40_000
+
+
 def clear_line_cache() -> None:
-    """Очистить кэш линий (для тестов и честных замеров)."""
+    """Очистить кэши линий (для тестов и честных замеров)."""
     _LINE_CACHE.clear()
+    _LINE_GEOM.clear()
+
+
+def _line_view(board, didx: int, inv: int, ts: List[int]):
+    """S1b: координаты и значения клеток линии.
+    Кэшируется по составу линии, поэтому при ходе пересобираются только
+    4 изменившиеся линии, а не все. Кэш общий для анализатора, потенциала
+    и наборов кандидатов — раньше каждая функция строила это заново.
+    ВНИМАНИЕ: возвращаемые списки общие, изменять их нельзя.
+    """
+    bl = getattr(board, "lines", None)
+    sig = None
+    if bl is not None:
+        cells = bl[didx].get(inv)
+        if cells:
+            sig = (didx, inv, tuple(sorted(cells.items())))
+            hit = _LINE_GEOM.get(sig)
+            if hit is not None:
+                return hit
+    lo, hi = min(ts) - MARGIN, max(ts) + MARGIN
+    coords = [_coord(didx, t, inv) for t in range(lo, hi + 1)]
+    vals = [board.get_cell(x, y) for (x, y) in coords]
+    out = (coords, vals)
+    if sig is not None:
+        if len(_LINE_GEOM) >= _LINE_GEOM_MAX:
+            _LINE_GEOM.clear()
+        _LINE_GEOM[sig] = out
+    return out
 
 
 def _line_cache_put(key, val) -> None:
@@ -213,9 +255,7 @@ def analyze_threats(board, player: int) -> List[Threat]:
     found: Dict[Tuple, Threat] = {}
 
     for (didx, inv), ts in _collect_lines(board, player).items():
-        lo, hi = min(ts) - MARGIN, max(ts) + MARGIN
-        coords = [_coord(didx, t, inv) for t in range(lo, hi + 1)]
-        vals = [board.get_cell(x, y) for (x, y) in coords]
+        coords, vals = _line_view(board, didx, inv, ts)
         direction = DIRECTIONS[didx]
 
         for a, b in _split_opponent(vals, opponent):
@@ -353,9 +393,7 @@ def four_move_candidates(board, player: int):
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
     res = set()
     for (didx, inv), ts in _collect_lines(board, player).items():
-        lo, hi = min(ts) - MARGIN, max(ts) + MARGIN
-        coords = [_coord(didx, t, inv) for t in range(lo, hi + 1)]
-        vals = [board.get_cell(x, y) for (x, y) in coords]
+        coords, vals = _line_view(board, didx, inv, ts)
         for a, b in _split_opponent(vals, opponent):
             sv, sc = vals[a:b], coords[a:b]
             key = ("four", player, bytes(sv))
@@ -395,9 +433,7 @@ def threat_move_candidates(board, player: int):
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
     res = set()
     for (didx, inv), ts in _collect_lines(board, player).items():
-        lo, hi = min(ts) - MARGIN, max(ts) + MARGIN
-        coords = [_coord(didx, t, inv) for t in range(lo, hi + 1)]
-        vals = [board.get_cell(x, y) for (x, y) in coords]
+        coords, vals = _line_view(board, didx, inv, ts)
         for a, b in _split_opponent(vals, opponent):
             sv, sc = vals[a:b], coords[a:b]
             key = ("threat", player, bytes(sv))
@@ -444,9 +480,7 @@ def window_potential(board, player: int) -> int:
     W = {1: 1, 2: 12, 3: 60}
     total = 0
     for (didx, inv), ts in _collect_lines(board, player).items():
-        lo, hi = min(ts) - MARGIN, max(ts) + MARGIN
-        coords = [_coord(didx, t, inv) for t in range(lo, hi + 1)]
-        vals = [board.get_cell(x, y) for (x, y) in coords]
+        coords, vals = _line_view(board, didx, inv, ts)
         for a, b in _split_opponent(vals, opponent):
             sv = vals[a:b]
             lkey = ("pot", player, bytes(sv))

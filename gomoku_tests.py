@@ -702,6 +702,56 @@ def _clear_all_caches() -> None:
             fn()
 
 
+@case("S1b: линии доски совпадают с пересчётом из grid после ходов и отмен")
+def test_board_lines_invariant():
+    from gomoku_analysis import _line_inv, _param
+
+    def rebuilt(b):
+        out = [{}, {}, {}, {}]
+        for (gx, gy), p in b.grid.items():
+            for d in range(4):
+                out[d].setdefault(_line_inv(d, gx, gy), {})[_param(d, gx, gy)] = p
+        return out
+
+    b = Board()
+    seq = [(0, 0), (1, 0), (0, 1), (2, 0), (0, 2), (-1, -1), (3, 3), (5, -2)]
+    for i, (x, y) in enumerate(seq):
+        b.make_move(x, y, PLAYER_X if i % 2 == 0 else PLAYER_O)
+        assert b.lines == rebuilt(b), f"расхождение после хода {i}"
+    for i in range(len(seq)):
+        b.undo_move()
+        assert b.lines == rebuilt(b), f"расхождение после отмены {i}"
+
+
+@case("S1b: кэш геометрии линий не меняет результаты")
+def test_line_view_cache_same_result():
+    import gomoku_analysis as ga
+    b = build([(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10), (-3, 2)])
+
+    def snap():
+        return (sorted((t.kind, t.stones, t.points)
+                       for t in analyze_threats(b, PLAYER_X)),
+                window_potential(b, PLAYER_X),
+                sorted(ga.four_move_candidates(b, PLAYER_X)),
+                sorted(ga.threat_move_candidates(b, PLAYER_X)))
+
+    ga.clear_line_cache(); ga.clear_threat_cache()
+    cold = snap()
+    warm = snap()
+    assert cold == warm, "кэш геометрии изменил результат"
+    ga.clear_line_cache(); ga.clear_threat_cache()
+    assert cold == snap(), "после очистки результат другой"
+
+
+@case("S1b: копия доски не делит линии с оригиналом")
+def test_board_copy_lines_independent():
+    b = build([(0, 0), (1, 0)], [(0, 1)])
+    c = b.copy()
+    c.make_move(5, 5, PLAYER_X)
+    assert (5, 5) not in b.grid
+    assert b.lines != c.lines, "линии копии связаны с оригиналом"
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)

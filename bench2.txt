@@ -1,3 +1,3 @@
-stones=12 analyze_x2=  0.30ms eval=  0.61ms nodes/s=  1036 move=(3, -1) time= 2.03s depth=5 decided=ШАГ 9
-stones=24 analyze_x2=  0.77ms eval=  1.23ms nodes/s=   657 move=(-3, -3) time= 0.01s depth=0 decided=ШАГ 4.4
-stones=36 analyze_x2=  1.05ms eval=  2.04ms nodes/s=   591 move=(1, 1) time= 1.32s depth=0 decided=ШАГ 4
+stones=12 analyze_x2=  0.13ms eval=  0.31ms nodes/s=  1900 move=(3, -1) time= 1.66s depth=6 decided=ШАГ 9
+stones=24 analyze_x2=  0.42ms eval=  0.62ms nodes/s=  1081 move=(-1, 0) time= 0.01s depth=0 decided=ШАГ 4.4
+stones=36 analyze_x2=  0.48ms eval=  0.94ms nodes/s=   931 move=(-6, -3) time= 0.03s depth=0 decided=РЕЖИМ СОПРОТИВЛЕНИЯ

@@ -16,6 +16,7 @@ from gomoku_analysis import (
     analyze_threats, is_double_threat_new, is_winning_threat_set,
     completion_points, four_move_candidates, threat_move_candidates, describe,
     FIVE, LIVE_FOUR, FOUR, LIVE_THREE, SLEEPING_THREE, window_potential,
+    _line_inv, _param,          # S1b: геометрия линий для инкрементального хранения
 )
 
 
@@ -87,6 +88,8 @@ class Board:
         self.grid: Dict[Tuple[int, int], int] = {}
         self.move_history: List[Tuple[int, int, int]] = []
         self.zhash: int = 0
+        # S1b: линии доски, обновляются инкрементально: didx -> inv -> {t: player}
+        self.lines: List[Dict[int, Dict[int, int]]] = [{}, {}, {}, {}]
 
     def make_move(self, x: int, y: int, player: int) -> bool:
         if (x, y) in self.grid:
@@ -94,6 +97,10 @@ class Board:
         self.grid[(x, y)] = player
         self.move_history.append((x, y, player))
         self.zhash ^= _zobrist_key(x, y, player)
+        for didx in range(4):
+            inv = _line_inv(didx, x, y)
+            t = _param(didx, x, y)
+            self.lines[didx].setdefault(inv, {})[t] = player
         return True
 
     def undo_move(self) -> Optional[Tuple[int, int, int]]:
@@ -102,6 +109,13 @@ class Board:
         x, y, player = self.move_history.pop()
         del self.grid[(x, y)]
         self.zhash ^= _zobrist_key(x, y, player)
+        for didx in range(4):
+            inv = _line_inv(didx, x, y)
+            t = _param(didx, x, y)
+            cells = self.lines[didx][inv]
+            del cells[t]
+            if not cells:
+                del self.lines[didx][inv]
         return (x, y, player)
 
     def get_cell(self, x: int, y: int) -> int:
@@ -131,6 +145,7 @@ class Board:
         b.grid = dict(self.grid)
         b.move_history = list(self.move_history)
         b.zhash = self.zhash
+        b.lines = [{inv: dict(cells) for inv, cells in d.items()} for d in self.lines]
         return b
 
 
