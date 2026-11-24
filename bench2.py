@@ -9,7 +9,7 @@ import time
 
 from gomoku import (Board, PLAYER_X, PLAYER_O, get_best_move, minimax,
                     evaluate_position, check_five, DEBUG_LOG)
-from gomoku_analysis import analyze_threats, completion_points
+from gomoku_analysis import analyze_threats, completion_points, clear_threat_cache
 
 
 def make_position(n_stones, seed):
@@ -80,9 +80,11 @@ def main():
     for n in (12, 24, 36):
         b = quiet_position(n)
         side = PLAYER_X if n % 2 == 0 else PLAYER_O
-        an = ms_per_call(lambda: (analyze_threats(b, PLAYER_X),
+        an = ms_per_call(lambda: (clear_threat_cache(),
+                                  analyze_threats(b, PLAYER_X),
                                   analyze_threats(b, PLAYER_O)), 20)
-        ev = ms_per_call(lambda: evaluate_position(b, PLAYER_X, to_move=PLAYER_O), 10)
+        ev = ms_per_call(lambda: (clear_threat_cache(),
+                                  evaluate_position(b, PLAYER_X, to_move=PLAYER_O)), 10)
         nps, used = nodes_per_sec(b, side)
         t0 = time.perf_counter()
         mv = get_best_move(b, side)

@@ -564,6 +564,7 @@ def test_window_cache_same_result():
 def test_window_cache_populates():
     import gomoku_analysis as ga
     ga.clear_window_cache()
+    ga.clear_threat_cache()      # верхний кэш иначе скроет нижний
     b = build([(0, 0), (1, 0), (2, 0)], [])
     ga.analyze_threats(b, PLAYER_X)
     assert len(ga._WINDOW_CACHE) > 0, "кэш пуст — значит не работает"
@@ -691,6 +692,16 @@ def test_threat_cache_position_sensitive():
     assert sorted(t.kind for t in analyze_threats(b, PLAYER_X)) == before
 
 
+def _clear_all_caches() -> None:
+    """Каждый тест начинается с чистых кэшей.
+    Иначе результат зависит от порядка запуска: верхний кэш скрывает нижний."""
+    import gomoku_analysis as ga
+    for name in ("clear_window_cache", "clear_line_cache", "clear_threat_cache"):
+        fn = getattr(ga, name, None)
+        if fn is not None:
+            fn()
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)
@@ -700,6 +711,7 @@ def run_tests(only: Optional[str] = None) -> int:
         if only and only.lower() not in name.lower():
             continue
         DEBUG_LOG.clear()
+        _clear_all_caches()
         try:
             fn()
             passed += 1
