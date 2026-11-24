@@ -75,8 +75,14 @@ def nodes_per_sec(b, side, n=400):
 
 
 def main():
-    print("Benchmark v2, please wait...", flush=True)
-    lines = []
+    import sys
+    import gomoku_analysis as ga
+    if "--no-pos-cache" in sys.argv:
+        ga.USE_POSITION_CACHE = False
+    tag = "pos_cache=ON" if ga.USE_POSITION_CACHE else "pos_cache=OFF"
+    out = "bench2.txt" if ga.USE_POSITION_CACHE else "bench2_nocache.txt"
+    print("Benchmark v2 (%s), please wait..." % tag, flush=True)
+    lines = ["режим: %s" % tag]
     for n in (12, 24, 36):
         b = quiet_position(n)
         side = PLAYER_X if n % 2 == 0 else PLAYER_O
@@ -94,9 +100,9 @@ def main():
                 % (n, an, ev, nps, mv, mt, max_depth(), deciding_step()))
         lines.append(line)
         print(line, flush=True)
-    with open("bench2.txt", "w", encoding="utf-8") as f:
+    with open(out, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
-    print("Saved: bench2.txt")
+    print("Saved: %s" % out)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,4 @@
+режим: pos_cache=OFF
+stones=12 analyze_x2=  0.15ms eval=  0.26ms nodes/s=  1663 move=(3, -1) time= 1.98s depth=6 decided=ШАГ 9
+stones=24 analyze_x2=  0.26ms eval=  0.48ms nodes/s=  1207 move=(-1, 0) time= 0.01s depth=0 decided=ШАГ 4.4
+stones=36 analyze_x2=  0.37ms eval=  0.91ms nodes/s=   948 move=(-6, -3) time= 0.03s depth=0 decided=РЕЖИМ СОПРОТИВЛЕНИЯ

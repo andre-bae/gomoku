@@ -752,6 +752,28 @@ def test_board_copy_lines_independent():
     assert b.lines != c.lines, "линии копии связаны с оригиналом"
 
 
+@case("S1c: выключенный кэш по позиции даёт те же результаты")
+def test_position_cache_flag_equivalence():
+    import gomoku_analysis as ga
+    b = build([(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10), (-3, 2)])
+
+    def snap():
+        return (sorted((t.kind, t.stones, t.points)
+                       for t in analyze_threats(b, PLAYER_X)),
+                window_potential(b, PLAYER_X))
+
+    try:
+        ga.USE_POSITION_CACHE = True
+        ga.clear_threat_cache()
+        on = snap()
+        ga.USE_POSITION_CACHE = False
+        ga.clear_threat_cache()
+        off = snap()
+        assert on == off, "кэш по позиции меняет результат"
+    finally:
+        ga.USE_POSITION_CACHE = True
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)

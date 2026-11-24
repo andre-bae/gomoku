@@ -231,6 +231,7 @@ _THREAT_CACHE: Dict[Tuple[int, int], List[Threat]] = {}
 _THREAT_CACHE_MAX = 20_000
 _POT_CACHE: Dict[Tuple[int, int], int] = {}
 _POT_CACHE_MAX = 20_000
+USE_POSITION_CACHE = True      # S1c: можно выключить для честного A/B замера
 
 
 def clear_threat_cache() -> None:
@@ -245,7 +246,7 @@ def analyze_threats(board, player: int) -> List[Threat]:
     Возвращаемый список НЕЛЬЗЯ изменять — он общий.
     """
     zh = getattr(board, "zhash", None)
-    pkey = (zh, player) if zh is not None else None
+    pkey = (zh, player) if (zh is not None and USE_POSITION_CACHE) else None
     if pkey is not None:
         hit = _THREAT_CACHE.get(pkey)
         if hit is not None:
@@ -470,7 +471,7 @@ def window_potential(board, player: int) -> int:
     S5a: кэш по содержимому отрезка. S1c: сверху кэш по позиции целиком.
     """
     zh = getattr(board, "zhash", None)
-    pkey = (zh, player) if zh is not None else None
+    pkey = (zh, player) if (zh is not None and USE_POSITION_CACHE) else None
     if pkey is not None:
         hit = _POT_CACHE.get(pkey)
         if hit is not None:
