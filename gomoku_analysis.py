@@ -185,7 +185,30 @@ def _classify_three(vals: List[int], player: int, opponent: int,
 
 # ---------- публичный API ----------
 
+_THREAT_CACHE: Dict[Tuple[int, int], List[Threat]] = {}
+_THREAT_CACHE_MAX = 20_000
+_POT_CACHE: Dict[Tuple[int, int], int] = {}
+_POT_CACHE_MAX = 20_000
+
+
+def clear_threat_cache() -> None:
+    """Очистить кэши по позиции (для тестов и честных замеров)."""
+    _THREAT_CACHE.clear()
+    _POT_CACHE.clear()
+
+
 def analyze_threats(board, player: int) -> List[Threat]:
+    """S1c: результат кэшируется по хешу позиции и стороне.
+    Хеш честный, потому что все пробные ходы идут через make_move/undo_move (C8).
+    Возвращаемый список НЕЛЬЗЯ изменять — он общий.
+    """
+    zh = getattr(board, "zhash", None)
+    pkey = (zh, player) if zh is not None else None
+    if pkey is not None:
+        hit = _THREAT_CACHE.get(pkey)
+        if hit is not None:
+            return hit
+
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
     found: Dict[Tuple, Threat] = {}
 
@@ -219,7 +242,7 @@ def analyze_threats(board, player: int) -> List[Threat]:
                 found[(t.kind, direction, t.stones, t.points)] = t
 
             for st, pts in threes.items():
-                # тройка, целиком лежащая внутри четвёрки/пятёрки, — не отдельная угроза
+                # тройка внутри четвёрки/пятёрки — не отдельная угроза
                 if set(st) <= four_stones or set(st) <= five_stones:
                     continue
                 kind, key_points = _classify_three(sv, player, opponent, pts, st)
@@ -230,7 +253,12 @@ def analyze_threats(board, player: int) -> List[Threat]:
                            tuple(sorted(sc[i] for i in key_points)))
                 found[(t.kind, direction, t.stones, t.points)] = t
 
-    return list(found.values())
+    out = list(found.values())
+    if pkey is not None:
+        if len(_THREAT_CACHE) >= _THREAT_CACHE_MAX:
+            _THREAT_CACHE.clear()
+        _THREAT_CACHE[pkey] = out
+    return out
 
 
 def completion_points(board, player: int) -> Set[Tuple[int, int]]:
@@ -403,9 +431,15 @@ def threat_move_candidates(board, player: int):
 def window_potential(board, player: int) -> int:
     """
     Взвешенный потенциал: окна из 5 клеток без камней противника.
-    Зажатая с обоих концов линия не даёт вклада — все её окна невалидны.
-    S5a: сумма по отрезку кэшируется по содержимому отрезка.
+    S5a: кэш по содержимому отрезка. S1c: сверху кэш по позиции целиком.
     """
+    zh = getattr(board, "zhash", None)
+    pkey = (zh, player) if zh is not None else None
+    if pkey is not None:
+        hit = _POT_CACHE.get(pkey)
+        if hit is not None:
+            return hit
+
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
     W = {1: 1, 2: 12, 3: 60}
     total = 0
@@ -415,8 +449,8 @@ def window_potential(board, player: int) -> int:
         vals = [board.get_cell(x, y) for (x, y) in coords]
         for a, b in _split_opponent(vals, opponent):
             sv = vals[a:b]
-            key = ("pot", player, bytes(sv))
-            got = _LINE_CACHE.get(key)
+            lkey = ("pot", player, bytes(sv))
+            got = _LINE_CACHE.get(lkey)
             if got is None:
                 n = len(sv)
                 got = 0
@@ -426,6 +460,11 @@ def window_potential(board, player: int) -> int:
                         if sv[i] == player:
                             k += 1
                     got += W.get(k, 0)
-                _line_cache_put(key, got)
+                _line_cache_put(lkey, got)
             total += got
+
+    if pkey is not None:
+        if len(_POT_CACHE) >= _POT_CACHE_MAX:
+            _POT_CACHE.clear()
+        _POT_CACHE[pkey] = total
     return total

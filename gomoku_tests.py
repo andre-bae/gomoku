@@ -660,6 +660,37 @@ def test_log_has_time_marks():
     assert any("(t=" in ln for ln in DEBUG_LOG), "нет меток времени"
 
 
+@case("S1c: кэш по позиции не меняет угрозы и потенциал")
+def test_threat_cache_same_result():
+    from gomoku_analysis import clear_threat_cache
+    b = build([(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10), (-3, 2)])
+
+    def snap():
+        return (sorted((t.kind, t.stones, t.points)
+                       for t in analyze_threats(b, PLAYER_X)),
+                window_potential(b, PLAYER_X))
+
+    clear_threat_cache()
+    cold = snap()
+    warm = snap()
+    assert cold == warm, "кэш изменил результат"
+    clear_threat_cache()
+    assert cold == snap(), "после очистки результат другой"
+
+
+@case("S1c: кэш по позиции замечает новый камень и его отмену")
+def test_threat_cache_position_sensitive():
+    from gomoku_analysis import clear_threat_cache
+    clear_threat_cache()
+    b = build([(0, 0), (1, 0), (2, 0)], [])
+    before = sorted(t.kind for t in analyze_threats(b, PLAYER_X))
+    b.make_move(3, 0, PLAYER_X)
+    after = sorted(t.kind for t in analyze_threats(b, PLAYER_X))
+    assert before != after, "кэш не заметил новый камень"
+    b.undo_move()
+    assert sorted(t.kind for t in analyze_threats(b, PLAYER_X)) == before
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)
