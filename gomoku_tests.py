@@ -696,7 +696,8 @@ def _clear_all_caches() -> None:
     """Каждый тест начинается с чистых кэшей.
     Иначе результат зависит от порядка запуска: верхний кэш скрывает нижний."""
     import gomoku_analysis as ga
-    for name in ("clear_window_cache", "clear_line_cache", "clear_threat_cache"):
+    for name in ("clear_window_cache", "clear_line_cache", "clear_threat_cache",
+                 "reset_stats"):
         fn = getattr(ga, name, None)
         if fn is not None:
             fn()
@@ -770,6 +771,34 @@ def test_position_cache_flag_equivalence():
         ga.clear_threat_cache()
         off = snap()
         assert on == off, "кэш по позиции меняет результат"
+    finally:
+        ga.USE_POSITION_CACHE = True
+
+
+@case("S1c: счётчики работы — попадания и полные расчёты")
+def test_position_cache_stats():
+    import gomoku_analysis as ga
+    b = build([(0, 0), (1, 0), (2, 0), (0, 1), (0, 2)], [(10, 10), (-3, 2)])
+    try:
+        ga.USE_POSITION_CACHE = True
+        ga.clear_threat_cache()
+        ga.reset_stats()
+        for _ in range(5):
+            analyze_threats(b, PLAYER_X)
+        assert ga.STATS["analyze_full"] == 1, f"analyze_full={ga.STATS['analyze_full']}, ожидали 1"
+        assert ga.STATS["analyze_hit"] == 4, f"analyze_hit={ga.STATS['analyze_hit']}, ожидали 4"
+        for _ in range(5):
+            window_potential(b, PLAYER_X)
+        assert ga.STATS["pot_full"] == 1, f"pot_full={ga.STATS['pot_full']}, ожидали 1"
+        assert ga.STATS["pot_hit"] == 4, f"pot_hit={ga.STATS['pot_hit']}, ожидали 4"
+
+        ga.USE_POSITION_CACHE = False
+        ga.clear_threat_cache()
+        ga.reset_stats()
+        for _ in range(5):
+            analyze_threats(b, PLAYER_X)
+        assert ga.STATS["analyze_full"] == 5, f"analyze_full={ga.STATS['analyze_full']}, ожидали 5"
+        assert ga.STATS["analyze_hit"] == 0, f"analyze_hit={ga.STATS['analyze_hit']}, ожидали 0"
     finally:
         ga.USE_POSITION_CACHE = True
 

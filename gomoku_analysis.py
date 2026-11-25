@@ -23,6 +23,22 @@ SLEEPING_THREE = "sleeping_three"  # ходом превращается тол�
 
 MARGIN = 5
 
+# ---------- счётчики работы (шаг 26) ----------
+# *_hit — взял из кэша, *_full / geom_build — посчитал с нуля.
+# Детерминированные величины: в отличие от секунд, не зависят от дрейфа машины.
+STATS = {
+    "analyze_full": 0, "analyze_hit": 0,
+    "pot_full": 0, "pot_hit": 0,
+    "geom_build": 0, "geom_hit": 0,
+    "scan_full": 0, "scan_hit": 0,
+}
+
+
+def reset_stats() -> None:
+    """Обнулить счётчики работы (для тестов и честных замеров)."""
+    for k in STATS:
+        STATS[k] = 0
+
 
 @dataclass(frozen=True)
 class Threat:
@@ -135,11 +151,13 @@ def _line_view(board, didx: int, inv: int, ts: List[int]):
             sig = (didx, inv, tuple(sorted(cells.items())))
             hit = _LINE_GEOM.get(sig)
             if hit is not None:
+                STATS["geom_hit"] += 1
                 return hit
     lo, hi = min(ts) - MARGIN, max(ts) + MARGIN
     coords = [_coord(didx, t, inv) for t in range(lo, hi + 1)]
     vals = [board.get_cell(x, y) for (x, y) in coords]
     out = (coords, vals)
+    STATS["geom_build"] += 1
     if sig is not None:
         if len(_LINE_GEOM) >= _LINE_GEOM_MAX:
             _LINE_GEOM.clear()
@@ -162,7 +180,9 @@ def _scan_windows(vals: List[int], player: int, opponent: int):
     key = (player, bytes(vals))
     hit = _WINDOW_CACHE.get(key)
     if hit is not None:
+        STATS["scan_hit"] += 1
         return hit
+    STATS["scan_full"] += 1
     n = len(vals)
     fives: List[Tuple[int, ...]] = []
     fours: Dict[Tuple[int, ...], Set[int]] = {}
@@ -250,7 +270,9 @@ def analyze_threats(board, player: int) -> List[Threat]:
     if pkey is not None:
         hit = _THREAT_CACHE.get(pkey)
         if hit is not None:
+            STATS["analyze_hit"] += 1
             return hit
+    STATS["analyze_full"] += 1
 
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
     found: Dict[Tuple, Threat] = {}
@@ -475,7 +497,9 @@ def window_potential(board, player: int) -> int:
     if pkey is not None:
         hit = _POT_CACHE.get(pkey)
         if hit is not None:
+            STATS["pot_hit"] += 1
             return hit
+    STATS["pot_full"] += 1
 
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
     W = {1: 1, 2: 12, 3: 60}
