@@ -803,6 +803,62 @@ def test_position_cache_stats():
         ga.USE_POSITION_CACHE = True
 
 
+@case("C15: VCT находит темповый блок при четвёрке защитника (партия 2026-11-24)")
+def test_vct_forced_block_game_regression():
+    from gomoku import PLAYER_X, PLAYER_O, search_vct
+    from gomoku_analysis import completion_points
+    # позиция после 15 ходов партии game_2026_11_24 + контр-четвёрка O(-3,1)
+    b = build([(-1, 0), (0, -1), (1, -2), (0, -3), (-2, -1),
+               (0, 2), (-5, -3), (-5, 1)],
+              [(-3, -1), (-2, -2), (-2, 1), (-2, 0), (-1, 1),
+               (-4, -2), (-4, 1), (-3, 1)])
+    assert completion_points(b, PLAYER_O) == {(0, 1)}, "ожидалась закрытая четвёрка O"
+    m = search_vct(b, depth=4, player=PLAYER_X, is_attacking=True,
+                   budget=[1500], tt={})
+    assert m == (0, 1), f"VCT X обязан найти блокирующую вилку (0,1), получено {m}"
+
+
+@case("C15: защита контр-четвёркой не опровергает VCT автоматически")
+def test_vct_defense_rejects_counter_four():
+    from gomoku import PLAYER_X, PLAYER_O, find_vct_defense, search_vct
+    # позиция после 15 ходов (O ещё не сыграл 16-й)
+    b = build([(-1, 0), (0, -1), (1, -2), (0, -3), (-2, -1),
+               (0, 2), (-5, -3), (-5, 1)],
+              [(-3, -1), (-2, -2), (-2, 1), (-2, 0), (-1, 1),
+               (-4, -2), (-4, 1)])
+    d = find_vct_defense(b, PLAYER_O, depth=4, known_threat=(0, 1))
+    assert d is not None, "защита должна быть найдена"
+    assert d != (-3, 1), "(-3,1) отдаёт вилку — не опровержение"
+    b.make_move(d[0], d[1], PLAYER_O)
+    still = search_vct(b, depth=4, player=PLAYER_X, is_attacking=True,
+                       budget=[1500], tt={})
+    assert still is None, "выбранная защита должна действительно опровергать VCT"
+
+
+@case("C15: своя пятёрка раньше чужой четвёрки (VCF и VCT)")
+def test_own_five_beats_defender_four():
+    # X: четвёрка (0,0)..(3,0), достройка (-1,0)/(4,0); O: четвёрка на y=5
+    b = build([(0, 0), (1, 0), (2, 0), (3, 0)],
+              [(0, 5), (1, 5), (2, 5), (3, 5)])
+    vcf = search_vcf(b, depth=6, player=PLAYER_X, is_attacking=True, budget=[400])
+    assert vcf in {(-1, 0), (4, 0)}, f"X обязан достроить пятёрку, получено {vcf}"
+    vct = search_vct(b, depth=4, player=PLAYER_X, is_attacking=True,
+                     budget=[400], tt={})
+    assert vct in {(-1, 0), (4, 0)}, f"VCT тоже обязан, получено {vct}"
+
+
+@case("C15: VCF находит четвёрку-блок при четвёрке защитника")
+def test_vcf_forced_block():
+    from gomoku_analysis import completion_points
+    # O: закрытая четвёрка (0,0)..(3,0), достройка (4,0); (-1,0) занят X.
+    # X(4,0) блокирует и создаёт живую четвёрку по вертикали x=4.
+    b = build([(-1, 0), (4, 1), (4, 2), (4, 3)],
+              [(0, 0), (1, 0), (2, 0), (3, 0)])
+    assert completion_points(b, PLAYER_O) == {(4, 0)}, "ожидалась закрытая четвёрка O"
+    m = search_vcf(b, depth=8, player=PLAYER_X, is_attacking=True, budget=[400])
+    assert m == (4, 0), f"VCF X обязан найти четвёрку-блок (4,0), получено {m}"
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)

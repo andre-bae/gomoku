@@ -351,11 +351,16 @@ def search_vcf(board: Board, depth: int, player: int, is_attacking: bool,
     defender = PLAYER_O if attacker == PLAYER_X else PLAYER_X
     ind = "  " * indent
 
-    # защитник собирает пятёрку первым — VCF атакующего не работает
-    if completion_points(board, defender):
-        return None
-
+    def_pts = completion_points(board, defender)
     win_now = completion_points(board, attacker)
+    forced_block = None
+    if def_pts and not (is_attacking and win_now):
+        # C15: защитник грозит пятёркой — атакующий обязан блокировать.
+        # Блок-четвёрка сам является темповой угрозой, не сдаёмся заранее.
+        if not is_attacking or len(def_pts) >= 2:
+            return None
+        forced_block = sorted(def_pts)[0]
+
     if win_now:
         m = sorted(win_now)[0]
         log(f"{ind}VCF: пятёрка {m} | путь: {' -> '.join(path + [f'{player_name(attacker)}{m}'])}")
@@ -365,6 +370,8 @@ def search_vcf(board: Board, depth: int, player: int, is_attacking: bool,
         return None
 
     moves = generate_four_moves(board, attacker)
+    if forced_block is not None:
+        moves = [m for m in moves if m == forced_block]
     if not moves:
         return None
     if indent <= VCF_LOG_MAX_INDENT:
@@ -439,9 +446,15 @@ def search_vct(board: Board, depth: int, player: int, is_attacking: bool,
     defender = PLAYER_O if attacker == PLAYER_X else PLAYER_X
     ind = "  " * indent
 
-    if completion_points(board, defender):
-        return None
+    def_pts = completion_points(board, defender)
     win_now = completion_points(board, attacker)
+    forced_block = None
+    if def_pts and not (is_attacking and win_now):
+        # C15: защитник грозит пятёркой — атакующий обязан блокировать.
+        # Блок сам может быть темповой угрозой, поэтому не сдаёмся заранее.
+        if not is_attacking or len(def_pts) >= 2:
+            return None
+        forced_block = sorted(def_pts)[0]
     if win_now:
         m = sorted(win_now)[0]
         log(f"{ind}VCT: пятёрка {m} | путь: {' -> '.join(path + [f'{player_name(attacker)}{m}'])}")
@@ -456,6 +469,8 @@ def search_vct(board: Board, depth: int, player: int, is_attacking: bool,
             return tt[key]
 
     moves = generate_threat_moves(board, attacker)
+    if forced_block is not None:
+        moves = [m for m in moves if m == forced_block]
     if not moves:
         return None
     if indent <= VCF_LOG_MAX_INDENT:
@@ -765,7 +780,7 @@ def find_vct_defense(board: Board, player: int, depth: int = 4,
     """
     Этап 6. Ход, после которого у противника НЕ остаётся VCT.
     Кандидаты prioritized, каждый проверяется повторным поиском.
-    Бюджет консервативный: при исчерпании считаем, что выигрыш не найден.
+    C15: обрыв бюджета перепроверки — «не доказано», а не «опровергнуто».
     """
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
 
@@ -802,12 +817,15 @@ def find_vct_defense(board: Board, player: int, depth: int = 4,
     verified = []
     for move in candidates:
         board.make_move(move[0], move[1], player)
+        trunc0 = _TRUNCATED[0]
         still = search_vct(board, depth=depth, player=opponent,
                            is_attacking=True, budget=[1500], tt={})
-        if still is None:
+        if still is None and _TRUNCATED[0] == trunc0:
             score = evaluate_position(board, player, to_move=opponent)
             verified.append((score, move))
             log(f"    защита {move} опровергает VCT (оценка {score})")
+        elif still is None:
+            log(f"    защита {move}: перепроверка оборвана — опровержение не доказано")
         else:
             log(f"    защита {move} не помогает: VCT {still}")
         board.undo_move()
