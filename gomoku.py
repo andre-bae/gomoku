@@ -31,6 +31,8 @@ TT_EXACT, TT_LOWER, TT_UPPER = 0, 1, 2
 ENABLE_POTENTIAL_FORK_SCAN = False        # шаг 6.5: перебор всех клеток
 ENABLE_THREAT_SCAN_AFTER_BLOCK = False    # скан угроз после каждого блока
 USE_NARROW_CANDIDATES = False             # S4: радиус 1 + точки угроз (A/B, по умолчанию выкл)
+USE_EXTENSIONS = False                    # ШАГ 30: продления на форсированных листьях (A/B, выкл)
+MAX_EXTENSION = 4                         # потолок дополнительных полуходов на линию
 MOVE_TIME_LIMIT = 3.0                     # жёсткий лимит секунд на ход ИИ
 _MOVE_DEADLINE = 0.0                      # служебное: когда время истекает
 _TRUNCATED = [0]                          # счётчик обрывов поиска: >0 = бюджет исчерпан
@@ -1024,7 +1026,8 @@ def _order_moves(board: Board, side: int, candidates,
 
 
 def minimax(board: Board, depth: int, alpha: int, beta: int,
-            is_maximizing: bool, player: int, budget=None, tt=None) -> int:
+            is_maximizing: bool, player: int, budget=None, tt=None,
+            ext_left: int = MAX_EXTENSION) -> int:
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
     current = player if is_maximizing else opponent
 
@@ -1045,6 +1048,43 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
         return 9_999_999 if current == player else -9_999_999
 
     if depth <= 0:
+        if USE_EXTENSIONS and ext_left > 0:
+            other = PLAYER_O if current == PLAYER_X else PLAYER_X
+            op_th = analyze_threats(board, other)
+            forced = {p for t in op_th
+                      if t.kind in (FOUR, LIVE_FOUR, LIVE_THREE) for p in t.points}
+            if forced:
+                ext_moves = sorted(forced | set(four_move_candidates(board, current)))
+                if is_maximizing:
+                    best = -float('inf')
+                    moved = False
+                    for (x, y) in ext_moves:
+                        if not board.make_move(x, y, current):
+                            continue
+                        moved = True
+                        v = minimax(board, depth - 1, alpha, beta, False, player,
+                                    budget, None, ext_left - 1)
+                        board.undo_move()
+                        best = max(best, v)
+                        alpha = max(alpha, v)
+                        if beta <= alpha:
+                            break
+                    return best if moved else evaluate_position(board, player, to_move=current)
+                else:
+                    best = float('inf')
+                    moved = False
+                    for (x, y) in ext_moves:
+                        if not board.make_move(x, y, current):
+                            continue
+                        moved = True
+                        v = minimax(board, depth - 1, alpha, beta, True, player,
+                                    budget, None, ext_left - 1)
+                        board.undo_move()
+                        best = min(best, v)
+                        beta = min(beta, v)
+                        if beta <= alpha:
+                            break
+                    return best if moved else evaluate_position(board, player, to_move=current)
         return evaluate_position(board, player, to_move=current)
 
     orig_alpha, orig_beta = alpha, beta
@@ -1074,7 +1114,7 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
         best = -float('inf')
         for (x, y), _ in ordered[:cap]:
             board.make_move(x, y, current)
-            v = minimax(board, depth - 1, alpha, beta, False, player, budget, tt)
+            v = minimax(board, depth - 1, alpha, beta, False, player, budget, tt, ext_left)
             board.undo_move()
             best = max(best, v)
             alpha = max(alpha, v)
@@ -1084,7 +1124,7 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
         best = float('inf')
         for (x, y), _ in ordered[:cap]:
             board.make_move(x, y, current)
-            v = minimax(board, depth - 1, alpha, beta, True, player, budget, tt)
+            v = minimax(board, depth - 1, alpha, beta, True, player, budget, tt, ext_left)
             board.undo_move()
             best = min(best, v)
             beta = min(beta, v)
