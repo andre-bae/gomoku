@@ -3,3 +3,12 @@ __pycache__/
 .idea/
 gomoku_ui_state.json
 backup_*/
+# Артефакты замеров (воспроизводимы, цифры в status.md)
+out.txt
+bench*.txt
+check_decide.txt
+review.txt
+move*.txt
+# Дампы самоигры (воспроизводимы через bench_game --fixed)
+bench_game_*.json
+positions/bench_game_*.json
