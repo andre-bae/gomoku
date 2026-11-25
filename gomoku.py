@@ -30,6 +30,7 @@ TT_EXACT, TT_LOWER, TT_UPPER = 0, 1, 2
 # --- Временные переключатели дорогих эвристик (сессия 1) ---
 ENABLE_POTENTIAL_FORK_SCAN = False        # шаг 6.5: перебор всех клеток
 ENABLE_THREAT_SCAN_AFTER_BLOCK = False    # скан угроз после каждого блока
+USE_NARROW_CANDIDATES = False             # S4: радиус 1 + точки угроз (A/B, по умолчанию выкл)
 MOVE_TIME_LIMIT = 3.0                     # жёсткий лимит секунд на ход ИИ
 _MOVE_DEADLINE = 0.0                      # служебное: когда время истекает
 _TRUNCATED = [0]                          # счётчик обрывов поиска: >0 = бюджет исчерпан
@@ -968,6 +969,17 @@ def evaluate_position(board: Board, player: int, to_move: Optional[int] = None) 
     return score
 
 
+def narrow_candidate_moves(board: Board) -> List[Tuple[int, int]]:
+    """S4: соседи радиуса 1 + ходы-угрозы обоих игроков.
+    Дальние тихие клетки (радиус 2, не угрозы) дают score 0 и не попадают
+    в top-10, но стоят 8 get_cell каждая при упорядочивании — убираем их.
+    Все тактические точки входят в threat_move_candidates и не теряются."""
+    cands = set(board.get_candidate_moves(radius=1))
+    for p in (PLAYER_X, PLAYER_O):
+        cands.update(threat_move_candidates(board, p))
+    return list(cands)
+
+
 def _order_moves(board: Board, side: int, candidates,
                  my_th=None) -> List[Tuple[Tuple[int, int], int]]:
     """
@@ -1051,7 +1063,10 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
             if alpha >= beta:
                 return val
 
-    candidates = board.get_candidate_moves(radius=2)
+    if USE_NARROW_CANDIDATES:
+        candidates = narrow_candidate_moves(board)
+    else:
+        candidates = board.get_candidate_moves(radius=2)
     ordered = _order_moves(board, current, candidates, my_th=cur_th)
     cap = 10
 
