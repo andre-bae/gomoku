@@ -33,6 +33,11 @@ ENABLE_THREAT_SCAN_AFTER_BLOCK = False    # скан угроз после ка�
 USE_NARROW_CANDIDATES = False             # S4: радиус 1 + точки угроз (A/B, по умолчанию выкл)
 USE_EXTENSIONS = False                    # ШАГ 30: продления на форсированных листьях (A/B, выкл)
 MAX_EXTENSION = 4                         # потолок дополнительных полуходов на линию
+USE_PVS = False                           # ШАГ 31: principal variation search (A/B, выкл)
+USE_KILLER_HISTORY = False                # ШАГ 31: killer/history в упорядочивании (A/B, выкл)
+USE_TT_BEST = False                       # ШАГ 31: лучший ход из TT первым (A/B, выкл)
+_KILLERS: Dict[int, List[Tuple[int, int]]] = {}
+_HISTORY: Dict[Tuple[int, int], int] = {}
 MOVE_TIME_LIMIT = 3.0                     # жёсткий лимит секунд на ход ИИ
 _MOVE_DEADLINE = 0.0                      # служебное: когда время истекает
 _TRUNCATED = [0]                          # счётчик обрывов поиска: >0 = бюджет исчерпан
@@ -971,6 +976,31 @@ def evaluate_position(board: Board, player: int, to_move: Optional[int] = None) 
     return score
 
 
+def reset_search_tables() -> None:
+    """Шаг 31: очистить killer/history перед ходом ИИ."""
+    _KILLERS.clear()
+    _HISTORY.clear()
+
+
+def _kh_boost(ordered, depth: int):
+    """Шаг 31: дешёвый пересорт по killer/history.
+    Бонусы ниже тактических (живая тройка 20000, четвёрка 50000+),
+    чтобы не вытеснять тактику из top-10."""
+    killers = _KILLERS.get(depth) or ()
+    if not killers and not _HISTORY:
+        return ordered
+    out = []
+    for mv, s in ordered:
+        if mv in killers:
+            s += 2000
+        h = _HISTORY.get(mv, 0)
+        if h:
+            s += min(h, 1000)
+        out.append((mv, s))
+    out.sort(key=lambda t: (-t[1], t[0]))
+    return out
+
+
 def narrow_candidate_moves(board: Board) -> List[Tuple[int, int]]:
     """S4: соседи радиуса 1 + ходы-угрозы обоих игроков.
     Дальние тихие клетки (радиус 2, не угрозы) дают score 0 и не попадают
@@ -1089,11 +1119,15 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
 
     orig_alpha, orig_beta = alpha, beta
     key = None
+    tt_move = None
     if tt is not None:
         key = (board.zhash, depth, is_maximizing, player)
         entry = tt.get(key)
         if entry is not None:
-            val, flag = entry
+            if len(entry) == 3:
+                val, flag, tt_move = entry
+            else:
+                val, flag = entry
             if flag == TT_EXACT:
                 return val
             if flag == TT_LOWER:
@@ -1108,28 +1142,71 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
     else:
         candidates = board.get_candidate_moves(radius=2)
     ordered = _order_moves(board, current, candidates, my_th=cur_th)
+    if USE_KILLER_HISTORY:
+        ordered = _kh_boost(ordered, depth)
+    if USE_TT_BEST and tt_move is not None:
+        for i, (mv, sc) in enumerate(ordered):
+            if mv == tt_move:
+                if i:
+                    ordered.insert(0, ordered.pop(i))
+                break
     cap = 10
 
+    best_move = None
     if is_maximizing:
         best = -float('inf')
+        first = True
         for (x, y), _ in ordered[:cap]:
             board.make_move(x, y, current)
-            v = minimax(board, depth - 1, alpha, beta, False, player, budget, tt, ext_left)
+            if USE_PVS and not first:
+                v = minimax(board, depth - 1, alpha, alpha + 1, False, player,
+                            budget, tt, ext_left)
+                if alpha < v < beta:
+                    v = minimax(board, depth - 1, v, beta, False, player,
+                                budget, tt, ext_left)
+            else:
+                v = minimax(board, depth - 1, alpha, beta, False, player,
+                            budget, tt, ext_left)
             board.undo_move()
-            best = max(best, v)
+            if v > best:
+                best, best_move = v, (x, y)
             alpha = max(alpha, v)
             if beta <= alpha:
+                if USE_KILLER_HISTORY:
+                    ks = _KILLERS.setdefault(depth, [])
+                    if (x, y) not in ks:
+                        ks.insert(0, (x, y))
+                        del ks[2:]
+                    _HISTORY[(x, y)] = _HISTORY.get((x, y), 0) + depth * depth
                 break
+            first = False
     else:
         best = float('inf')
+        first = True
         for (x, y), _ in ordered[:cap]:
             board.make_move(x, y, current)
-            v = minimax(board, depth - 1, alpha, beta, True, player, budget, tt, ext_left)
+            if USE_PVS and not first:
+                v = minimax(board, depth - 1, beta - 1, beta, True, player,
+                            budget, tt, ext_left)
+                if alpha < v < beta:
+                    v = minimax(board, depth - 1, alpha, v, True, player,
+                                budget, tt, ext_left)
+            else:
+                v = minimax(board, depth - 1, alpha, beta, True, player,
+                            budget, tt, ext_left)
             board.undo_move()
-            best = min(best, v)
+            if v < best:
+                best, best_move = v, (x, y)
             beta = min(beta, v)
             if beta <= alpha:
+                if USE_KILLER_HISTORY:
+                    ks = _KILLERS.setdefault(depth, [])
+                    if (x, y) not in ks:
+                        ks.insert(0, (x, y))
+                        del ks[2:]
+                    _HISTORY[(x, y)] = _HISTORY.get((x, y), 0) + depth * depth
                 break
+            first = False
 
     if tt is not None and key is not None and len(tt) < TT_MAX_ENTRIES:
         if best <= orig_alpha:
@@ -1138,7 +1215,7 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
             flag = TT_LOWER
         else:
             flag = TT_EXACT
-        tt[key] = (best, flag)
+        tt[key] = (best, flag, best_move)
 
     return best
 
@@ -1355,6 +1432,7 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     global _MOVE_DEADLINE
     _TRUNCATED[0] = 0
     _BEST_SO_FAR[0] = None
+    reset_search_tables()
     base_len = len(board.move_history)
     t0 = time.perf_counter()
     _MOVE_DEADLINE = t0 + MOVE_TIME_LIMIT
