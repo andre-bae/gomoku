@@ -22,12 +22,14 @@ CONFIGS = {
     "pvs": {"USE_PVS": True},
     "tt": {"USE_TT_BEST": True},
     "pvstt": {"USE_PVS": True, "USE_TT_BEST": True},
+    "contest": {"USE_CONTEST_EVAL": True},
 }
 
 
 def apply_config(cfg):
     G.USE_PVS = cfg.get("USE_PVS", False)
     G.USE_TT_BEST = cfg.get("USE_TT_BEST", False)
+    G.USE_CONTEST_EVAL = cfg.get("USE_CONTEST_EVAL", False)
     G.USE_POSITION_CACHE = True
 
 

@@ -1181,7 +1181,8 @@ class GomokuApp:
         self.move_records.append({"n": n, "player": p, "move": (x, y),
                                   "analysis": analysis, "elapsed": elapsed})
         self.game_log.append("%d. %s (%s, %s)" % (n, player_name(p), coord(x), coord(y)))
-        self.ensure_visible(x, y)
+        # ШАГ 36: автопоказ убран — поле не двигается само во время игры.
+        # Игрок сам сдвинет поле или изменит масштаб; кнопка «Центр C» осталась.
         self._sync()
         self.schedule()
         return True

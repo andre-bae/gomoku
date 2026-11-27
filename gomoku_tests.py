@@ -896,6 +896,21 @@ def test_board_integrity_after_search():
     assert before == after, "поиск изменил доску (лишний make/undo)"
 
 
+@case("Ш36: оценка антисимметрична при обоих весах темпа")
+def test_eval_antisymmetry_contest():
+    import gomoku as G
+    b = build([(0, 0), (1, 1), (2, 0)], [(-2, 1), (-3, 0)])
+    try:
+        for flag in (False, True):
+            G.USE_CONTEST_EVAL = flag
+            for tm in (PLAYER_X, PLAYER_O):
+                a = G.evaluate_position(b, PLAYER_X, to_move=tm)
+                c = G.evaluate_position(b, PLAYER_O, to_move=tm)
+                assert a == -c, f"антисимметрия нарушена: {a} vs {c} (flag={flag})"
+    finally:
+        G.USE_CONTEST_EVAL = False
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)

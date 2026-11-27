@@ -35,6 +35,7 @@ ENABLE_THREAT_SCAN_AFTER_BLOCK = False    # скан угроз после ка�
 # (стабильно медленнее). Обоснования и условия возврата — BACKLOG.md B-02/B-04/B-06.
 USE_PVS = False                           # ШАГ 31: PVS, ~8% скорости, сила та же (B-11)
 USE_TT_BEST = False                       # ШАГ 31: лучший ход из TT первым (B-11)
+USE_CONTEST_EVAL = True                  # ШАГ 36: оспаривание вместо развития в стороне (A/B)
 MOVE_TIME_LIMIT = 3.0                     # жёсткий лимит секунд на ход ИИ
 _MOVE_DEADLINE = 0.0                      # служебное: когда время истекает
 _TRUNCATED = [0]                          # счётчик обрывов поиска: >0 = бюджет исчерпан
@@ -959,14 +960,17 @@ def evaluate_position(board: Board, player: int, to_move: Optional[int] = None) 
         if to_move == opponent:
             score -= TEMPO.get(t.kind, 0)
 
-    score += 25 * (_connectivity(board, player) - _connectivity(board, opponent))
+    # ШАГ 36: 25 очков за свою кучность штрафовали блокировку чужой пары.
+    conn_w = 10 if USE_CONTEST_EVAL else 25
+    score += conn_w * (_connectivity(board, player) - _connectivity(board, opponent))
     # Вес потенциала зависит от темпа, а не от роли "я/противник" —
     # правило одинаково для обеих сторон, поэтому антисимметрия сохраняется.
-    # Сторона НЕ в ходу опаснее: её потенциал ещё не реализован, значит
-    # мешать её построению важнее, чем достраивать своё.
+    # ШАГ 36: сторона В ходу опаснее — она реализует потенциал первой.
+    # Прежние веса (1.0/1.25) были обратными и поощряли развитие в стороне
+    # от противника: движок проигрывал гонку темпа (triage 7 партий, ход 4).
     pot_me = window_potential(board, player)
     pot_op = window_potential(board, opponent)
-    w_move, w_wait = 1.0, 1.25
+    w_move, w_wait = (1.25, 1.0) if USE_CONTEST_EVAL else (1.0, 1.25)
     w_me = w_move if to_move == player else w_wait
     w_op = w_move if to_move == opponent else w_wait
     score += int(pot_me * w_me) - int(pot_op * w_op)
@@ -988,6 +992,9 @@ def _order_moves(board: Board, side: int, candidates,
     my_live3 = {p for t in my_th if t.kind == LIVE_THREE for p in t.points}
     op_live3 = {p for t in op_th if t.kind == LIVE_THREE for p in t.points}
     my_four_moves = four_move_candidates(board, side)
+    # ШАГ 36: клетки, где противник строит угрозу — их надо оспаривать.
+    # Пара угрозой не считается, поэтому без этого блокировки пар не попадали в top-10.
+    op_build = threat_move_candidates(board, opp) if USE_CONTEST_EVAL else ()
 
     scored = []
     for (x, y) in candidates:
@@ -1002,6 +1009,8 @@ def _order_moves(board: Board, side: int, candidates,
             s += 20_000
         if (x, y) in op_live3:
             s += 15_000
+        if (x, y) in op_build:
+            s += 25_000
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 if dx == 0 and dy == 0:
