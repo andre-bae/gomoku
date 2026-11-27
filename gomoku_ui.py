@@ -1254,7 +1254,13 @@ class GomokuApp:
             self.turn = self.human_mark
             self.schedule()
             return
-        self.place(move[0], move[1], self.ai_mark, analysis, elapsed)
+        # ШАГ 37: place возвращает False, если клетка занята (устаревший ход ИИ).
+        # Раньше after_move вызывался безусловно, и проверка победы считала чужой
+        # камень своим: партия g14_20261127 — ложная победа O без пятёрки.
+        if not self.place(move[0], move[1], self.ai_mark, analysis, elapsed):
+            self.turn = self.human_mark
+            self.schedule()
+            return
         self.after_move(move[0], move[1], self.ai_mark)
 
     def finish(self, p, line):
