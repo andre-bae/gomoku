@@ -15,10 +15,8 @@ REPEATS = 2
 
 
 def run(n, flags):
-    G.USE_EXTENSIONS = False
-    G.USE_PVS, G.USE_KILLER_HISTORY, G.USE_TT_BEST = flags
+    G.USE_PVS, G.USE_TT_BEST = flags[0], flags[2]
     ga.clear_threat_cache(); ga.clear_line_cache(); ga.clear_window_cache()
-    G.reset_search_tables()
     DEBUG_LOG.clear(); G._TRUNCATED[0] = 0
     b = quiet_position(n)
     side = PLAYER_X if n % 2 == 0 else PLAYER_O
@@ -40,7 +38,7 @@ def main():
                 mv, dt, d, step = run(n, flags)
                 res[name].append(dt)
                 info[name] = (mv, d, step)
-        G.USE_PVS = G.USE_KILLER_HISTORY = G.USE_TT_BEST = False
+        G.USE_PVS = G.USE_TT_BEST = False
         parts = []
         for name, _ in VARIANTS:
             mt = statistics.median(res[name])

@@ -21,18 +21,13 @@ CONFIGS = {
     "base": {},
     "pvs": {"USE_PVS": True},
     "tt": {"USE_TT_BEST": True},
-    "kh": {"USE_KILLER_HISTORY": True},
     "pvstt": {"USE_PVS": True, "USE_TT_BEST": True},
-    "narrow": {"USE_NARROW_CANDIDATES": True},
 }
 
 
 def apply_config(cfg):
     G.USE_PVS = cfg.get("USE_PVS", False)
-    G.USE_KILLER_HISTORY = cfg.get("USE_KILLER_HISTORY", False)
     G.USE_TT_BEST = cfg.get("USE_TT_BEST", False)
-    G.USE_EXTENSIONS = cfg.get("USE_EXTENSIONS", False)
-    G.USE_NARROW_CANDIDATES = cfg.get("USE_NARROW_CANDIDATES", False)
     G.USE_POSITION_CACHE = True
 
 

@@ -859,6 +859,43 @@ def test_vcf_forced_block():
     assert m == (4, 0), f"VCF X обязан найти четвёрку-блок (4,0), получено {m}"
 
 
+@case("Ш34: PVS+TT-best не меняют оценку при полном поиске")
+def test_pvs_tt_value_matches():
+    import gomoku as G
+    b = build([(0, 0), (1, 0), (2, 0)], [(0, 3), (1, 3)])
+    kw = dict(depth=3, alpha=-10**9, beta=10**9, is_maximizing=True, player=PLAYER_X)
+    base = G.minimax(b, budget=[20000], tt={}, **kw)
+    try:
+        G.USE_PVS = True
+        G.USE_TT_BEST = True
+        got = G.minimax(b, budget=[20000], tt={}, **kw)
+    finally:
+        G.USE_PVS = False
+        G.USE_TT_BEST = False
+    assert base == got, f"оценка изменилась: {base} -> {got}"
+
+
+@case("Ш34: TT хранит лучший ход (задел под главную линию)")
+def test_tt_stores_move():
+    b = build([(0, 0), (1, 0), (2, 0)], [(0, 3), (1, 3)])
+    tt = {}
+    minimax(b, depth=2, alpha=-10**9, beta=10**9, is_maximizing=True,
+            player=PLAYER_X, budget=[5000], tt=tt)
+    assert tt, "TT пустая"
+    assert all(len(v) == 3 for v in tt.values()), "запись TT без хода"
+
+
+@case("Ш34: доска после get_best_move идентична исходной")
+def test_board_integrity_after_search():
+    b = build([(0, 0), (1, 0), (2, 0), (-1, 2)], [(0, 3), (1, 3), (2, 2)])
+    before = (dict(b.grid), list(b.move_history), b.zhash,
+              [{inv: dict(cells) for inv, cells in d.items()} for d in b.lines])
+    get_best_move(b, PLAYER_X)
+    after = (dict(b.grid), list(b.move_history), b.zhash,
+             [{inv: dict(cells) for inv, cells in d.items()} for d in b.lines])
+    assert before == after, "поиск изменил доску (лишний make/undo)"
+
+
 def run_tests(only: Optional[str] = None) -> int:
     passed = failed = known = 0
     print("=" * 70)

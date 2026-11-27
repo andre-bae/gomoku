@@ -28,16 +28,13 @@ TT_EXACT, TT_LOWER, TT_UPPER = 0, 1, 2
 
 
 # --- Временные переключатели дорогих эвристик (сессия 1) ---
-ENABLE_POTENTIAL_FORK_SCAN = False        # шаг 6.5: перебор всех клеток
-ENABLE_THREAT_SCAN_AFTER_BLOCK = False    # скан угроз после каждого блока
-USE_NARROW_CANDIDATES = False             # S4: радиус 1 + точки угроз (A/B, по умолчанию выкл)
-USE_EXTENSIONS = False                    # ШАГ 30: продления на форсированных листьях (A/B, выкл)
-MAX_EXTENSION = 4                         # потолок дополнительных полуходов на линию
-USE_PVS = False                           # ШАГ 31: principal variation search (A/B, выкл)
-USE_KILLER_HISTORY = False                # ШАГ 31: killer/history в упорядочивании (A/B, выкл)
-USE_TT_BEST = False                       # ШАГ 31: лучший ход из TT первым (A/B, выкл)
-_KILLERS: Dict[int, List[Tuple[int, int]]] = {}
-_HISTORY: Dict[Tuple[int, int], int] = {}
+ENABLE_POTENTIAL_FORK_SCAN = False        # шаг 6.5: перебор всех клеток (BACKLOG B-14)
+ENABLE_THREAT_SCAN_AFTER_BLOCK = False    # скан угроз после каждого блока (BACKLOG B-14)
+# Удалены в шаге 34 как отклонённые по замерам: USE_NARROW_CANDIDATES (S4, 0–6%),
+# USE_EXTENSIONS + MAX_EXTENSION (продления, портили доску), USE_KILLER_HISTORY
+# (стабильно медленнее). Обоснования и условия возврата — BACKLOG.md B-02/B-04/B-06.
+USE_PVS = False                           # ШАГ 31: PVS, ~8% скорости, сила та же (B-11)
+USE_TT_BEST = False                       # ШАГ 31: лучший ход из TT первым (B-11)
 MOVE_TIME_LIMIT = 3.0                     # жёсткий лимит секунд на ход ИИ
 _MOVE_DEADLINE = 0.0                      # служебное: когда время истекает
 _TRUNCATED = [0]                          # счётчик обрывов поиска: >0 = бюджет исчерпан
@@ -976,42 +973,6 @@ def evaluate_position(board: Board, player: int, to_move: Optional[int] = None) 
     return score
 
 
-def reset_search_tables() -> None:
-    """Шаг 31: очистить killer/history перед ходом ИИ."""
-    _KILLERS.clear()
-    _HISTORY.clear()
-
-
-def _kh_boost(ordered, depth: int):
-    """Шаг 31: дешёвый пересорт по killer/history.
-    Бонусы ниже тактических (живая тройка 20000, четвёрка 50000+),
-    чтобы не вытеснять тактику из top-10."""
-    killers = _KILLERS.get(depth) or ()
-    if not killers and not _HISTORY:
-        return ordered
-    out = []
-    for mv, s in ordered:
-        if mv in killers:
-            s += 2000
-        h = _HISTORY.get(mv, 0)
-        if h:
-            s += min(h, 1000)
-        out.append((mv, s))
-    out.sort(key=lambda t: (-t[1], t[0]))
-    return out
-
-
-def narrow_candidate_moves(board: Board) -> List[Tuple[int, int]]:
-    """S4: соседи радиуса 1 + ходы-угрозы обоих игроков.
-    Дальние тихие клетки (радиус 2, не угрозы) дают score 0 и не попадают
-    в top-10, но стоят 8 get_cell каждая при упорядочивании — убираем их.
-    Все тактические точки входят в threat_move_candidates и не теряются."""
-    cands = set(board.get_candidate_moves(radius=1))
-    for p in (PLAYER_X, PLAYER_O):
-        cands.update(threat_move_candidates(board, p))
-    return list(cands)
-
-
 def _order_moves(board: Board, side: int, candidates,
                  my_th=None) -> List[Tuple[Tuple[int, int], int]]:
     """
@@ -1056,8 +1017,14 @@ def _order_moves(board: Board, side: int, candidates,
 
 
 def minimax(board: Board, depth: int, alpha: int, beta: int,
-            is_maximizing: bool, player: int, budget=None, tt=None,
-            ext_left: int = MAX_EXTENSION) -> int:
+            is_maximizing: bool, player: int, budget=None, tt=None) -> int:
+    """Позиционный поиск alpha-beta с TT.
+
+    Шаг 34: удалены отклонённые по замерам продления, killer/history и узкий набор
+    (BACKLOG B-02/B-04/B-06). Оставлены PVS и лучший ход из TT (B-11).
+    TT хранит лучший ход — это задел под главную линию (B-12).
+    Бюджет узлов и дедлайн ограничивают работу; обрыв учитывается через _TRUNCATED.
+    """
     opponent = PLAYER_O if player == PLAYER_X else PLAYER_X
     current = player if is_maximizing else opponent
 
@@ -1078,43 +1045,6 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
         return 9_999_999 if current == player else -9_999_999
 
     if depth <= 0:
-        if USE_EXTENSIONS and ext_left > 0:
-            other = PLAYER_O if current == PLAYER_X else PLAYER_X
-            op_th = analyze_threats(board, other)
-            forced = {p for t in op_th
-                      if t.kind in (FOUR, LIVE_FOUR, LIVE_THREE) for p in t.points}
-            if forced:
-                ext_moves = sorted(forced | set(four_move_candidates(board, current)))
-                if is_maximizing:
-                    best = -float('inf')
-                    moved = False
-                    for (x, y) in ext_moves:
-                        if not board.make_move(x, y, current):
-                            continue
-                        moved = True
-                        v = minimax(board, depth - 1, alpha, beta, False, player,
-                                    budget, None, ext_left - 1)
-                        board.undo_move()
-                        best = max(best, v)
-                        alpha = max(alpha, v)
-                        if beta <= alpha:
-                            break
-                    return best if moved else evaluate_position(board, player, to_move=current)
-                else:
-                    best = float('inf')
-                    moved = False
-                    for (x, y) in ext_moves:
-                        if not board.make_move(x, y, current):
-                            continue
-                        moved = True
-                        v = minimax(board, depth - 1, alpha, beta, True, player,
-                                    budget, None, ext_left - 1)
-                        board.undo_move()
-                        best = min(best, v)
-                        beta = min(beta, v)
-                        if beta <= alpha:
-                            break
-                    return best if moved else evaluate_position(board, player, to_move=current)
         return evaluate_position(board, player, to_move=current)
 
     orig_alpha, orig_beta = alpha, beta
@@ -1137,13 +1067,8 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
             if alpha >= beta:
                 return val
 
-    if USE_NARROW_CANDIDATES:
-        candidates = narrow_candidate_moves(board)
-    else:
-        candidates = board.get_candidate_moves(radius=2)
+    candidates = board.get_candidate_moves(radius=2)
     ordered = _order_moves(board, current, candidates, my_th=cur_th)
-    if USE_KILLER_HISTORY:
-        ordered = _kh_boost(ordered, depth)
     if USE_TT_BEST and tt_move is not None:
         for i, (mv, sc) in enumerate(ordered):
             if mv == tt_move:
@@ -1159,25 +1084,16 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
         for (x, y), _ in ordered[:cap]:
             board.make_move(x, y, current)
             if USE_PVS and not first:
-                v = minimax(board, depth - 1, alpha, alpha + 1, False, player,
-                            budget, tt, ext_left)
+                v = minimax(board, depth - 1, alpha, alpha + 1, False, player, budget, tt)
                 if alpha < v < beta:
-                    v = minimax(board, depth - 1, v, beta, False, player,
-                                budget, tt, ext_left)
+                    v = minimax(board, depth - 1, v, beta, False, player, budget, tt)
             else:
-                v = minimax(board, depth - 1, alpha, beta, False, player,
-                            budget, tt, ext_left)
+                v = minimax(board, depth - 1, alpha, beta, False, player, budget, tt)
             board.undo_move()
             if v > best:
                 best, best_move = v, (x, y)
             alpha = max(alpha, v)
             if beta <= alpha:
-                if USE_KILLER_HISTORY:
-                    ks = _KILLERS.setdefault(depth, [])
-                    if (x, y) not in ks:
-                        ks.insert(0, (x, y))
-                        del ks[2:]
-                    _HISTORY[(x, y)] = _HISTORY.get((x, y), 0) + depth * depth
                 break
             first = False
     else:
@@ -1186,25 +1102,16 @@ def minimax(board: Board, depth: int, alpha: int, beta: int,
         for (x, y), _ in ordered[:cap]:
             board.make_move(x, y, current)
             if USE_PVS and not first:
-                v = minimax(board, depth - 1, beta - 1, beta, True, player,
-                            budget, tt, ext_left)
+                v = minimax(board, depth - 1, beta - 1, beta, True, player, budget, tt)
                 if alpha < v < beta:
-                    v = minimax(board, depth - 1, alpha, v, True, player,
-                                budget, tt, ext_left)
+                    v = minimax(board, depth - 1, alpha, v, True, player, budget, tt)
             else:
-                v = minimax(board, depth - 1, alpha, beta, True, player,
-                            budget, tt, ext_left)
+                v = minimax(board, depth - 1, alpha, beta, True, player, budget, tt)
             board.undo_move()
             if v < best:
                 best, best_move = v, (x, y)
             beta = min(beta, v)
             if beta <= alpha:
-                if USE_KILLER_HISTORY:
-                    ks = _KILLERS.setdefault(depth, [])
-                    if (x, y) not in ks:
-                        ks.insert(0, (x, y))
-                        del ks[2:]
-                    _HISTORY[(x, y)] = _HISTORY.get((x, y), 0) + depth * depth
                 break
             first = False
 
@@ -1432,7 +1339,6 @@ def get_best_move(board: Board, player: int) -> Tuple[int, int]:
     global _MOVE_DEADLINE
     _TRUNCATED[0] = 0
     _BEST_SO_FAR[0] = None
-    reset_search_tables()
     base_len = len(board.move_history)
     t0 = time.perf_counter()
     _MOVE_DEADLINE = t0 + MOVE_TIME_LIMIT
